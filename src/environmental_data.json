@@ -1,0 +1,40 @@
+[
+  {
+    "location": {
+      "lat": "",
+      "lon": "",
+      "collection_date": "2020-12-20"
+    },
+    "SevereWeather": {
+      "error": "ValueError: Unknown format code 'f' for object of type 'str'"
+    },
+    "NOAA_Tides": {
+      "error": "TypeError: unsupported operand type(s) for -: 'float' and 'str'"
+    },
+    "Meteostat": {
+      "error": "API returned no data."
+    },
+    "RadNet": {
+      "error": "TypeError: unsupported operand type(s) for -: 'str' and 'float'"
+    },
+    "NWS": {
+      "error": "ValueError: Unknown format code 'f' for object of type 'str'"
+    },
+    "USGS_Earthquake": {
+      "error": "API returned no data."
+    },
+    "SoilGrids": {
+      "error": "API returned no data."
+    },
+    "OpenMeteo": {
+      "error": "API returned no data."
+    },
+    "SoilState": {
+      "error": "API returned no data."
+    },
+    "EnvironmentalHealth": {},
+    "iNaturalist": {
+      "error": "IndexError: list index out of range"
+    }
+  }
+]

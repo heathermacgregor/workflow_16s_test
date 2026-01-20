@@ -1,0 +1,553 @@
+# ===================================================================
+#                 ML & REPORTING ONLY CONFIGURATION
+# ===================================================================
+# This configuration file runs ONLY:
+# 1. Machine Learning (CatBoost) with all 3 strategies
+# 2. ML visualization generation
+# 3. HTML report generation
+#
+# All upstream processing, data loading, and other analyses are DISABLED.
+# Use this after downstream data is already processed and saved.
+# ===================================================================
+
+# -------------------------------------------------------------------
+#  Paths & Directories 📂
+# -------------------------------------------------------------------
+paths:
+  base: "/usr2/people/macgregor/amplicon/" 
+  project: "/usr2/people/macgregor/amplicon/project_01_ml_viz"  # Fresh directory for ML viz run 
+  blast_db: "/usr2/people/macgregor/blast_db/SILVA_16S_db" 
+  vsearch_db: "/usr2/people/macgregor/blast_db/silva_nr99.udb"
+  classifier: "/usr2/people/macgregor/amplicon/workflow_16s/resources/classifier/silva-138-99-515-806" 
+  phylogeny: "/usr2/people/macgregor/amplicon/workflow_16s/resources/phylogeny/gg-2022-10-ssu-nr99" 
+  manual_metadata: "/usr2/people/macgregor/manual_metadata" 
+  dataset_list: "/usr2/people/macgregor/amplicon/workflow_16s/resources/input/example_01/datasets.txt" 
+  dataset_info: "/usr2/people/macgregor/amplicon/workflow_16s/resources/input/example_01/datasets.tsv" 
+  primer_db: "/usr2/people/macgregor/amplicon/workflow_16s/src/data/primer_data.db" 
+
+# -------------------------------------------------------------------
+#  DATASETS
+# -------------------------------------------------------------------
+datasets: 
+  dataset_list: "/usr2/people/macgregor/amplicon/workflow_16s/resources/input/example_01/datasets.txt" 
+  dataset_info: "/usr2/people/macgregor/amplicon/workflow_16s/resources/input/example_01/datasets.tsv"
+
+# -------------------------------------------------------------------
+#  Quality Control & Filtering Thresholds 🎯
+# -------------------------------------------------------------------
+quality_control:
+  min_sequencing_depth: 1000  # Lower threshold for loading existing data
+  min_sample_prevalence: 2
+  plot_dpi: 150
+
+# -------------------------------------------------------------------
+#  Phylogeny & Tree Construction 🌳
+# -------------------------------------------------------------------
+phylogeny:
+  conda_env: null 
+
+# -------------------------------------------------------------------
+#  Execution & Performance Parameters 🚀
+# -------------------------------------------------------------------
+verbose: True
+execution:
+  threads: 48        # INCREASED from 32
+  cpu_limit: 60      # INCREASED from 52 (Allow slightly higher peak)
+  max_concurrency: 10
+cpu:
+  limit: 52
+
+# -------------------------------------------------------------------
+# WEB SCRAPING SETTINGS
+# -------------------------------------------------------------------
+web:
+  user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+
+# -------------------------------------------------------------------
+# CREDENTIALS
+# -------------------------------------------------------------------
+credentials:
+  email: "macgregor@berkeley.edu"
+  ena_email: "macgregor@berkeley.edu"
+  mindat_api_key: "ee6cec6c0c15e4e2960871477dbfb072"
+  airnow_api_key: "3B2E33D0-0102-4A2A-ABE8-08211D3E1D25"
+  usgs_api_key: "Gx6sR3yF8kJtnFv6ZsJjW4EYZal15prWmB8f2bNc"
+  ncbi_api_key: "4c94f710e470be18d4ef4de1debb0d804c09" 
+  nrel_api_key: "th4maNQ0TRcRGF2rankEwQesZ0w2Ifyo3irCGTtB"
+  openaq_api_key: "fbd5f9bb2330a8b50c531f30b142ccbdd611fd6f0da30fdde3eb5385078a2d2b"
+  google_earth_engine_project: 'wired-day-365517'
+  springer_api_key: "fb250d7df882273aa34875560ce81986"
+  mendeley_api_key: "weJd5aHPGV6Cv26I"
+
+# ===================================================================
+# UPSTREAM - ALL DISABLED
+# ===================================================================
+upstream: 
+  enabled: False
+
+upload_anndata_to_zenodo:
+  enabled: False  # Disabled
+
+# -------------------------------------------------------------------
+# NFC FACILITIES - DISABLED (data already processed)
+# -------------------------------------------------------------------
+nfc_facilities:
+  enabled: True
+  use_cache: False
+  use_local: True
+  databases: ["DNFSB", "MinDat", "GEM", "NFCIS"]
+  fetch_nearby_samples: False
+  max_distance_km: 50
+  match_existing_samples: True   # <--- CHANGE THIS FROM False TO True
+  distance_threshold_km: 5
+  facility_match_column: "facility_match"
+  facility_distance_column: "facility_distance_km"
+  facility_name_column: "facility_name"
+  facility_type_column: "facility_type"
+  facility_id_column: "facility_id"
+  facility_lat_column: "facility_latitude"
+  facility_lon_column: "facility_longitude"
+  maps: True
+
+# -------------------------------------------------------------------
+# SEQUENCE PROCESSING - ALL DISABLED
+# -------------------------------------------------------------------
+sequences:
+  max_file_size_gb: 5.0
+  cleanup_raw_files: false
+  ena: 
+    max_concurrent: 5
+  pcr_primers:
+    mode: "manual"
+    n_threads: 16
+  target_subfragment: "any"
+  quality_control:
+    fastqc:
+      enabled: False  # Disabled
+      cleanup: True
+    seqkit:
+      enabled: False  # Disabled
+      max_workers: 8
+  validate_16s: 
+    enabled: False  # Disabled
+    n_runs: 100
+    concurrent_jobs: 12
+    n_threads: 4
+    run_targets: ["16S", "unknown"]
+    pident: 0.90
+  trim:
+    cutadapt:
+      enabled: False  # Disabled
+      n_cores: 16
+      start_trim: 0
+      end_trim: 0
+      start_q_cutoff: 30
+      end_q_cutoff: 15
+      min_seq_length: 150
+
+# -------------------------------------------------------------------
+# METADATA
+# -------------------------------------------------------------------
+metadata:
+  filters:
+    amplicon: True 
+    no_host: True   
+  columns:
+    sample_id: "#sampleid" 
+    dataset: "dataset_name" 
+    groups:
+      - name: "nuclear_contamination_status"
+        type: "bool"
+        values: [True, False]
+  mappings: {'env_biome': 'environment_biome', 'env_feature': 'environment_feature', 'env_material': 'environment_material'} 
+  columns_to_drop: ['fastq_aspera', 'fastq_bytes', 'fastq_galaxy', 'fastq_md5'] 
+  force_numeric_columns: [] 
+  categorical_mappings: {} 
+  suffixes_to_collapse: ['_ena', '_study', '_sample', '_run', '_experiment', '_deg', '.1'] 
+
+# -------------------------------------------------------------------
+#  QIIME2 PROCESSING - ALL DISABLED
+# -------------------------------------------------------------------
+qiime2:
+  hard_rerun: False
+  per_dataset:
+    collapse_level: 6
+    script_path: "/usr2/people/macgregor/amplicon/workflow_16s/src/workflow_16s/api/qiime/seqs_to_features.py"
+    hard_rerun: False
+    trim:
+      enabled: False  # Disabled
+    denoise:
+      chimera_method: "consensus"
+      denoise_algorithm: "DADA2"
+    taxonomy:
+      classifier_dir: "/usr2/people/macgregor/amplicon/workflow_16s/resources/classifier/silva-138-99-515-806" 
+      classifier: "silva-138-99-515-806"
+      classify_method: "sklearn"
+      confidence: 0.7
+    filter:
+      retain_threshold: 80
+  meta_analysis:
+    script_path: "/usr2/people/macgregor/amplicon/workflow_16s/src/workflow_16s/api/qiime/phylogenetic_metaanalysis.py"
+    hard_rerun: False
+
+clean_fastq: 
+  enabled: False  # Disabled
+
+# ===================================================================
+# DOWNSTREAM - ENABLED FOR ML & REPORTING ONLY
+# ===================================================================
+downstream: 
+  enabled: True  # ENABLED
+  find_subsets: False
+  
+  # Data loading - DISABLED - will concatenate 385 h5ad files
+  load_existing_data: True  # Use pre-concatenated file for speed
+  data_file: "../project_01/03_processed_data/final_processed_adata.h5ad"
+
+group_column: "facility_match"  # Primary grouping variable
+group_column_type: "bool"
+group_column_values: 
+  - True
+  - False 
+
+preprocessing:
+  clean_metadata:
+    enabled: False
+    key_cols: []
+    cols_to_keep: []
+  metadata_quality:
+    min_fullness: 0.4
+    min_samples: 100
+    max_categories: 50
+    standardize_dates: True
+  rebuild_tree:
+    enabled: False
+    method: "fasttree"
+    threads: 4
+  filter:
+    enabled: False
+    min_sequencing_depth: 1000
+    min_sample_prevalence: 2
+    target_gene:
+      enabled: False
+      keep_genes: ['16S']
+      metadata_column: 'target_gene'
+    terms_to_exclude: []
+    contaminant_terms: []
+    admin_noise_columns: []
+
+# -------------------------------------------------------------------
+# COMPOSITIONAL DATA ANALYSIS - DISABLED
+# -------------------------------------------------------------------
+compositional:
+  enabled: False
+
+# -------------------------------------------------------------------
+# BATCH EFFECTS - DISABLED (handled by ML strategies)
+# -------------------------------------------------------------------
+batch_effects:
+  enabled: False
+
+# -------------------------------------------------------------------
+# DECONTAMINATION - DISABLED
+# -------------------------------------------------------------------
+decontamination:
+  enabled: False
+
+# -------------------------------------------------------------------
+# PHYLOGENETIC DIVERSITY - DISABLED
+# -------------------------------------------------------------------
+phylogenetic_diversity:
+  enabled: False
+
+# -------------------------------------------------------------------
+# DIFFERENTIAL ABUNDANCE - DISABLED
+# -------------------------------------------------------------------
+differential_abundance:
+  enabled: False
+
+# -------------------------------------------------------------------
+# COMPOSITIONAL NETWORKS - DISABLED
+# -------------------------------------------------------------------
+compositional_networks:
+  enabled: False
+
+# -------------------------------------------------------------------
+# LONGITUDINAL ANALYSIS - DISABLED
+# -------------------------------------------------------------------
+longitudinal:
+  enabled: False
+
+# -------------------------------------------------------------------
+# POWER ANALYSIS - DISABLED
+# -------------------------------------------------------------------
+power_analysis:
+  enabled: False
+
+# -------------------------------------------------------------------
+# DASHBOARD - DISABLED
+# -------------------------------------------------------------------
+dashboard:
+  enabled: False
+
+# -------------------------------------------------------------------
+# SAMPLE MAPS - DISABLED
+# -------------------------------------------------------------------
+maps:
+  enabled: False
+
+# -------------------------------------------------------------------
+# FEATURE TABLE PREPROCESSING - DISABLED (load existing)
+# -------------------------------------------------------------------
+features: 
+  load_existing: True  # Load from previous run
+  filter: False
+  normalize: False
+  clr_transform: False
+  presence_absence: False
+
+# -------------------------------------------------------------------
+# ALPHA DIVERSITY - DISABLED
+# -------------------------------------------------------------------
+alpha_diversity: 
+  enabled: False
+  plots: 
+    enabled: False
+    add_points: False
+    add_stat_annot: False
+    effect_size_threshold: 0.5
+  parametric: False
+  correlation_analysis: 
+    enabled: False
+    max_categories: 20
+    min_group_size: 5
+    top_n_correlations: 20
+  tables: 
+    raw:  
+      enabled: False
+      levels: []
+    normalized:
+      enabled: False
+      levels: []
+  metrics: []
+
+# -------------------------------------------------------------------
+# STATISTICAL ANALYSES - DISABLED
+# -------------------------------------------------------------------
+stats: 
+  enabled: False
+
+# -------------------------------------------------------------------
+# BETA DIVERSITY - DISABLED
+# -------------------------------------------------------------------
+beta_diversity: 
+  enabled: False
+  load_existing: False
+  max_workers: 2
+  cpu_limit: 16
+  tables:
+    raw:
+      enabled: False
+      pcoa_metric: "braycurtis"
+      levels: []
+      methods: []
+
+# -------------------------------------------------------------------
+#  CST / CLUSTERING - EXPLICITLY DISABLED
+# -------------------------------------------------------------------
+diversity:
+  community_state_typing:
+    enabled: False
+    level: "Genus"
+
+# -------------------------------------------------------------------
+# MACHINE LEARNING - **ENABLED** (MAIN FOCUS)
+# -------------------------------------------------------------------
+ml: 
+  enabled: True 
+  load_existing: False 
+  n_threads: 10      # INCREASED (Give CatBoost massive power)
+  num_features: 500
+  step_size: 100
+  permutation_importance: 
+    enabled: True
+  plots:
+    enabled: True
+  tables:
+    raw:
+      enabled: False
+      levels: []
+      methods: []
+    filtered:
+      enabled: False
+      levels: []
+      methods: []
+    normalized:
+      enabled: False
+      levels: []
+      methods: []
+    clr_transformed:
+      enabled: True  # Primary table for ML
+      levels: ["genus"]  # Focus on genus level
+      methods: ["shap"]  # SHAP feature selection
+    presence_absence:
+      enabled: False
+      levels: []
+      methods: []
+
+# -------------------------------------------------------------------
+# MACHINE LEARNING - BATCH COVARIATE CONTROL
+# **ENABLED** - Run all 3 strategies
+# -------------------------------------------------------------------
+machine_learning:
+  batch_covariates:
+    enabled: True  # *** ENABLED ***
+    
+    covariate_columns:
+      - 'batch_original'
+      - 'sequencing_center'
+      - 'instrument_platform'
+      - 'instrument_model'
+      - 'library_layout'
+      - 'pcr_primer_fwd'
+      - 'pcr_primer_rev'
+      - 'target_subfragment'
+      - 'dna_extraction_method'
+      - 'study_accession'
+      - 'dataset_id'
+    
+    covariate_adjustment:
+      enabled: True  # Strategy 1: Include batch as features
+      output_suffix: '_batch_adjusted'
+      one_hot_encode: True
+      max_categories: 20
+      scale_covariates: False
+    
+    stratified_prediction:
+      enabled: True  # Strategy 2: Two-stage residual analysis
+      output_suffix: '_batch_residual'
+      consistent_split: True
+      save_batch_models: True
+    
+    confounding_detection:
+      enabled: True  # Warn about batch-target correlations
+      correlation_threshold: 0.7
+      methods: ['cramer_v', 'eta_squared', 'spearman']
+      plot_confounding: True
+    
+    comparison:
+      enabled: True  # Compare all strategies
+      compare_metrics: ['accuracy', 'r2', 'oob_score', 'feature_importance_overlap']
+      plot_comparison: True
+      generate_summary: True
+
+# -------------------------------------------------------------------
+# ML TARGETS - Define which variables to predict
+# -------------------------------------------------------------------
+ml_targets:
+  - 'facility_match'  # Primary target
+  - 'facility_distance_km'  # Secondary target
+  - 'facility_type'  # Tertiary target (if data available)
+  - 'facility_status'  # Quaternary target (if data available)
+  - 'nuclear_contamination_status'  # Compare with facility matches
+
+# -------------------------------------------------------------------
+# FUNCTIONAL PREDICTION - DISABLED
+# -------------------------------------------------------------------
+faprotax: 
+  enabled: False
+  database_path: null
+
+functional:
+  enabled: False
+  faprotax:
+    enabled: False
+    database_path: null
+  picrust2:
+    enabled: False
+    ref_dir: null
+    threads: 16
+
+# -------------------------------------------------------------------
+# RAREFACTION - DISABLED
+# -------------------------------------------------------------------
+rarefaction:
+  enabled: False
+
+# -------------------------------------------------------------------
+# HTML REPORT GENERATION - **ENABLED**
+# -------------------------------------------------------------------
+reporting:
+  enabled: True  # *** ENABLED ***
+  
+  # Include only ML and synthesis sections
+  include_sections:
+    - 'machine_learning'
+    - 'ml_strategy_comparison'
+    - 'ml_group_fingerprints'
+    - 'ml_batch_effects'
+    - 'synthesis'
+  
+  # Output format
+  output_dir: "05_reports"
+  report_name: "ML_Strategy_Comparison_Report.html"
+  
+  # ML-specific reporting options
+  ml_report:
+    strategy_comparison_dashboard: True  # Include strategy comparison
+    group_fingerprints: True  # Include group-specific biomarkers
+    batch_effect_analysis: True  # Show batch effect impact
+    feature_stability: True  # Show feature consistency across strategies
+    performance_metrics: True  # Include all performance metrics
+    shap_visualizations: True  # Include all SHAP plots
+    
+    # Targets to include in report
+    targets:
+      - 'facility_match'
+      - 'facility_distance_km'
+      - 'facility_type'
+      - 'facility_status'
+      - 'nuclear_contamination_status'
+    
+    # Strategies to compare
+    strategies:
+      - 'baseline'  # No batch correction
+      - 'agnostic'  # Batch excluded
+      - 'group_validated'  # Group-aware CV
+    
+    # Top N features to display
+    top_n_features: 30
+    
+    # Group comparisons
+    group_comparisons:
+      enabled: True
+      grouping_variables:
+        - 'facility_match'
+        - 'facility_type'
+        - 'facility_status'
+        - 'contamination_status'
+        - 'env_biome'
+        - 'env_feature'
+
+# -------------------------------------------------------------------
+# SYNTHESIS - **ENABLED** (for ML report generation)
+# -------------------------------------------------------------------
+synthesis:
+  enabled: True
+  ml_visualizations: True
+  strategy_comparison: True
+  group_fingerprints: True
+  batch_effect_impact: True
+  multi_group_comparison: True
+  master_biomarker_summary: True
+  generate_html_report: True
+  report_format: "interactive"
+
+# -------------------------------------------------------------------
+# TOP FEATURES & FEATURE MAPS (Required by schema)
+# -------------------------------------------------------------------
+top_features:
+  enabled: False
+  
+feature_maps:
+  enabled: False

@@ -1,0 +1,830 @@
+{
+  "last_updated": "2025-09-09T08:05:33.142740",
+  "total_assets": 997,
+  "featured_assets": [
+    {
+      "service_id": "GEE/LANDSAT_LC08_C02_T1_L2",
+      "asset_id": "LANDSAT/LC08/C02/T1_L2",
+      "title": "Landsat 8 Surface Reflectance",
+      "category": "satellite",
+      "bands": [
+        "SR_B1",
+        "SR_B2",
+        "SR_B3",
+        "SR_B4",
+        "SR_B5",
+        "SR_B6",
+        "SR_B7"
+      ],
+      "description": "This dataset contains atmospherically corrected\nsurface reflectance and land surface temperature derived from the data\nproduced by the Landsat 8 OLI/TIRS sensors.\nThese images contain 5 visible and ne..."
+    },
+    {
+      "service_id": "GEE/COPERNICUS_S2_SR_HARMONIZED",
+      "asset_id": "COPERNICUS/S2_SR_HARMONIZED",
+      "title": "Sentinel-2 Surface Reflectance",
+      "category": "satellite",
+      "bands": [
+        "B2",
+        "B3",
+        "B4",
+        "B8"
+      ],
+      "description": "After 2022-01-25, Sentinel-2 scenes with PROCESSING_BASELINE '04.00' or above\nhave their DN (value) range shifted by 1000. The HARMONIZED collection\nshifts data in newer scenes to be in the same range..."
+    },
+    {
+      "service_id": "GEE/MODIS_006_MOD17A2H",
+      "asset_id": "MODIS/006/MOD17A2H",
+      "title": "MODIS Gross Primary Productivity",
+      "category": "vegetation",
+      "bands": [
+        "Gpp",
+        "PsnNet",
+        "Psn_QC"
+      ],
+      "description": "The MOD17A2H V6 Gross Primary Productivity (GPP) product\nis a cumulative 8-day composite with a 500m pixel size. The product\nis based on the radiation-use efficiency concept and can be potentially\nuse..."
+    },
+    {
+      "service_id": "GEE/MODIS_006_MOD13A1",
+      "asset_id": "MODIS/006/MOD13A1",
+      "title": "MODIS Vegetation Indices",
+      "category": "vegetation",
+      "bands": [
+        "NDVI",
+        "EVI"
+      ],
+      "description": "The MOD13A1 V6 product provides a Vegetation Index (VI)\nvalue at a per pixel basis. There are two primary vegetation layers.\nThe first is the Normalized Difference Vegetation Index (NDVI)\nwhich is ref..."
+    },
+    {
+      "service_id": "GEE/ECMWF_ERA5_LAND_DAILY_AGGR",
+      "asset_id": "ECMWF/ERA5_LAND/DAILY_AGGR",
+      "title": "ERA5-Land Daily Aggregates",
+      "category": "climate",
+      "bands": [
+        "temperature_2m",
+        "total_precipitation"
+      ],
+      "description": "ERA5-Land is a reanalysis dataset providing a consistent view of the\nevolution of land variables over several decades at an enhanced resolution\ncompared to ERA5. ERA5-Land has been produced by replayi..."
+    },
+    {
+      "service_id": "GEE/NASA_NASADEM_HGT_001",
+      "asset_id": "NASA/NASADEM_HGT/001",
+      "title": "NASADEM Elevation",
+      "category": "terrain",
+      "bands": [
+        "elevation"
+      ],
+      "description": "NASADEM is a reprocessing of SRTM data, with improved accuracy by incorporating auxiliary data\nfrom ASTER GDEM, ICESat GLAS, and PRISM datasets.\n\nThe most significant processing improvements involve v..."
+    }
+  ],
+  "categories": {
+    "satellite": [
+      {
+        "service_id": "GEE/COPERNICUS_MARINE_OC_GLO_BGC_PLANKTON_MULTI_4KM",
+        "asset_id": "COPERNICUS/MARINE/OC_GLO_BGC/PLANKTON_MULTI_4KM",
+        "title": "Global Ocean Colour: Bio-Geo-Chemical, L4, from Satellite Observations, Plankton, Multi-Sensor, 4KM",
+        "description": "The Global Ocean Colour (Copernicus-GlobColour) dataset is a Bio-Geo-Chemical\n(BGC) product develope..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_MARINE_OC_GLO_BGC_OPTICS_MULTI_4KM",
+        "asset_id": "COPERNICUS/MARINE/OC_GLO_BGC/OPTICS_MULTI_4KM",
+        "title": "Global Ocean Colour: Bio-Geo-Chemical, L4, from Satellite Observations, Optics, Multi-Sensor 4KM",
+        "description": "The Global Ocean Colour (Copernicus-GlobColour) dataset is a Bio-Geo-Chemical\n(BGC) product develope..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_CORINE_V18_5_1_100m",
+        "asset_id": "COPERNICUS/CORINE/V18_5_1/100m",
+        "title": "Copernicus CORINE Land Cover [deprecated]",
+        "description": "The CORINE (coordination of information on the environment) Land Cover\n(CLC) inventory was initiated..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_Landcover_100m_Proba-V-C3_Global",
+        "asset_id": "COPERNICUS/Landcover/100m/Proba-V-C3/Global",
+        "title": "Copernicus Global Land Cover Layers: CGLS-LC100 Collection 3",
+        "description": "The Copernicus Global Land Service (CGLS) is earmarked as a component of\nthe Land service to operate..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_CORINE_V20_100m",
+        "asset_id": "COPERNICUS/CORINE/V20/100m",
+        "title": "Copernicus CORINE Land Cover",
+        "description": "The CORINE (coordination of information on the environment) Land Cover\n(CLC) inventory was initiated..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_Landcover_100m_Proba-V_Global",
+        "asset_id": "COPERNICUS/Landcover/100m/Proba-V/Global",
+        "title": "Copernicus Global Land Cover Layers: CGLS-LC100 Collection 2 [deprecated]",
+        "description": "The Copernicus Global Land Service (CGLS) is earmarked as a component of\nthe Land service to operate..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_MARINE_OC_GLO_BGC_PLANKTON_OLCI_300M",
+        "asset_id": "COPERNICUS/MARINE/OC_GLO_BGC/PLANKTON_OLCI_300M",
+        "title": "Global Ocean Colour: Bio-Geo-Chemical, L4, from Satellite Observations, Plankton, OLCI, 300M",
+        "description": "The Global Ocean Colour (Copernicus-GlobColour) dataset is a Bio-Geo-Chemical\n(BGC) product develope..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_MARINE_OC_GLO_BGC_REFLECTANCE_MULTI_4KM",
+        "asset_id": "COPERNICUS/MARINE/OC_GLO_BGC/REFLECTANCE_MULTI_4KM",
+        "title": "Global Ocean Colour: Bio-Geo-Chemical, L4, from Satellite Observations, Reflectance, Multi-Sensor 4KM",
+        "description": "The Global Ocean Colour (Copernicus-GlobColour) dataset is a Bio-Geo-Chemical\n(BGC) product develope..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_MARINE_OC_GLO_BGC_PRIMARY_PRODUCTION_MULTI_4KM",
+        "asset_id": "COPERNICUS/MARINE/OC_GLO_BGC/PRIMARY_PRODUCTION_MULTI_4KM",
+        "title": "Global Ocean Colour: Bio-Geo-Chemical, L4, from Satellite Observations, Primary Production, Multi-Sensor 4KM",
+        "description": "The Global Ocean Colour (Copernicus-GlobColour) dataset is a Bio-Geo-Chemical\n(BGC) product develope..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_MARINE_OC_GLO_BGC_REFLECTANCE_OLCI_300M",
+        "asset_id": "COPERNICUS/MARINE/OC_GLO_BGC/REFLECTANCE_OLCI_300M",
+        "title": "Global Ocean Colour: Bio-Geo-Chemical, L4, from Satellite Observations, Reflectance, OLCI 300M",
+        "description": "The Global Ocean Colour (Copernicus-GlobColour) dataset is a Bio-Geo-Chemical\n(BGC) product develope..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_MARINE_OC_GLO_BGC_TRANSPARENCY_MULTI_4KM",
+        "asset_id": "COPERNICUS/MARINE/OC_GLO_BGC/TRANSPARENCY_MULTI_4KM",
+        "title": "Global Ocean Colour: Bio-Geo-Chemical, L4, from Satellite Observations, Transparency, Multi-Sensor, 4KM",
+        "description": "The Global Ocean Colour (Copernicus-GlobColour) dataset is a Bio-Geo-Chemical\n(BGC) product develope..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_MARINE_SATELLITE_OCEAN_COLOR_V6",
+        "asset_id": "COPERNICUS/MARINE/SATELLITE_OCEAN_COLOR/V6",
+        "title": "Copernicus Satellite Ocean Color Daily Data",
+        "description": "This dataset provides global daily estimates of ocean surface chlorophyll-a\nconcentration and remote..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S2_CLOUD_PROBABILITY",
+        "asset_id": "COPERNICUS/S2_CLOUD_PROBABILITY",
+        "title": "Sentinel-2: Cloud Probability",
+        "description": "The S2 cloud probability is created with the\n[sentinel2-cloud-detector](https://github.com/sentinel-..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_MARINE_OC_GLO_BGC_TRANSPARENCY_OLCI_4KM",
+        "asset_id": "COPERNICUS/MARINE/OC_GLO_BGC/TRANSPARENCY_OLCI_4KM",
+        "title": "Global Ocean Colour: Bio-Geo-Chemical, L4, from Satellite Observations, Transparency, OLCI, 4KM",
+        "description": "The Global Ocean Colour (Copernicus-GlobColour) dataset is a Bio-Geo-Chemical\n(BGC) product develope..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_NRTI_L3_AER_LH",
+        "asset_id": "COPERNICUS/S5P/NRTI/L3_AER_LH",
+        "title": "Sentinel-5P NRTI AER LH: Near Real-Time UV Aerosol Layer Height",
+        "description": "### NRTI/L3_AER_LH\n\nThis dataset provides offline high-resolution imagery of the UV Aerosol Index\n(U..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S1_GRD",
+        "asset_id": "COPERNICUS/S1_GRD",
+        "title": "Sentinel-1 SAR GRD: C-band Synthetic Aperture Radar Ground Range Detected, log scaling",
+        "description": "The Sentinel-1 mission provides data from a dual-polarization\nC-band Synthetic Aperture Radar (SAR) ..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S2_SR_HARMONIZED",
+        "asset_id": "COPERNICUS/S2_SR_HARMONIZED",
+        "title": "Harmonized Sentinel-2 MSI: MultiSpectral Instrument, Level-2A (SR)",
+        "description": "After 2022-01-25, Sentinel-2 scenes with PROCESSING_BASELINE '04.00' or above\nhave their DN (value) ..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S2_HARMONIZED",
+        "asset_id": "COPERNICUS/S2_HARMONIZED",
+        "title": "Harmonized Sentinel-2 MSI: MultiSpectral Instrument, Level-1C (TOA)",
+        "description": "After 2022-01-25, Sentinel-2 scenes with PROCESSING_BASELINE '04.00' or above\nhave their DN (value) ..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S2",
+        "asset_id": "COPERNICUS/S2",
+        "title": "Sentinel-2 MSI: MultiSpectral Instrument, Level-1C (TOA) [deprecated]",
+        "description": "See also collection COPERNICUS/S2_HARMONIZED that shifts data with\nPROCESSING_BASELINE '04.00' or ab..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_NRTI_L3_AER_AI",
+        "asset_id": "COPERNICUS/S5P/NRTI/L3_AER_AI",
+        "title": "Sentinel-5P NRTI AER AI: Near Real-Time UV Aerosol Index",
+        "description": "### NRTI/L3_AER_AI\n\nThis dataset provides near real-time high-resolution imagery of the UV Aerosol I..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S3_OLCI",
+        "asset_id": "COPERNICUS/S3/OLCI",
+        "title": "Sentinel-3 OLCI EFR: Ocean and Land Color Instrument Earth Observation Full Resolution",
+        "description": "The Ocean and Land Color Instrument (OLCI) Earth Observation\nFull Resolution (EFR) dataset contains ..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S2_SR",
+        "asset_id": "COPERNICUS/S2_SR",
+        "title": "Sentinel-2 MSI: MultiSpectral Instrument, Level-2A (SR) [deprecated]",
+        "description": "See also collection COPERNICUS/S2_SR_HARMONIZED that shifts data with\nPROCESSING_BASELINE '04.00' or..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_NRTI_L3_CLOUD",
+        "asset_id": "COPERNICUS/S5P/NRTI/L3_CLOUD",
+        "title": "Sentinel-5P NRTI CLOUD: Near Real-Time Cloud Properties",
+        "description": "### NRTI/L3_CLOUD\n\nThis dataset provides near real-time high-resolution imagery of cloud parameters...."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_NRTI_L3_CO",
+        "asset_id": "COPERNICUS/S5P/NRTI/L3_CO",
+        "title": "Sentinel-5P NRTI CO: Near Real-Time Carbon Monoxide",
+        "description": "### NRTI/L3_CO\n\nThis dataset provides near real-time high-resolution imagery of CO\nconcentrations.\n\n..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_NRTI_L3_HCHO",
+        "asset_id": "COPERNICUS/S5P/NRTI/L3_HCHO",
+        "title": "Sentinel-5P NRTI HCHO: Near Real-Time Formaldehyde",
+        "description": "### NRTI/L3_HCHO\n\nThis dataset provides near real-time high-resolution imagery of atmospheric\nformal..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_NRTI_L3_NO2",
+        "asset_id": "COPERNICUS/S5P/NRTI/L3_NO2",
+        "title": "Sentinel-5P NRTI NO2: Near Real-Time Nitrogen Dioxide",
+        "description": "### NRTI/L3_NO2\n\nThis dataset provides near real-time high-resolution imagery of NO<sub>2</sub> conc..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_NRTI_L3_SO2",
+        "asset_id": "COPERNICUS/S5P/NRTI/L3_SO2",
+        "title": "Sentinel-5P NRTI SO2: Near Real-Time Sulfur Dioxide",
+        "description": "### NRTI/L3_SO2\n\nThis dataset provides near real-time high-resolution imagery of atmospheric\nsulfur ..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_OFFL_L3_AER_AI",
+        "asset_id": "COPERNICUS/S5P/OFFL/L3_AER_AI",
+        "title": "Sentinel-5P OFFL AER AI: Offline UV Aerosol Index",
+        "description": "### OFFL/L3_AER_AI\n\nThis dataset provides offline high-resolution imagery of the UV Aerosol Index\n(U..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_NRTI_L3_O3",
+        "asset_id": "COPERNICUS/S5P/NRTI/L3_O3",
+        "title": "Sentinel-5P NRTI O3: Near Real-Time Ozone",
+        "description": "### NRTI/L3_O3\n\nThis dataset provides near-real-time high-resolution imagery of total\ncolumn ozone c..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_OFFL_L3_HCHO",
+        "asset_id": "COPERNICUS/S5P/OFFL/L3_HCHO",
+        "title": "Sentinel-5P OFFL HCHO: Offline Formaldehyde",
+        "description": "### OFFL/L3_HCHO\n\nThis dataset provides offline high-resolution imagery of atmospheric\nformaldehyde ..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_OFFL_L3_CO",
+        "asset_id": "COPERNICUS/S5P/OFFL/L3_CO",
+        "title": "Sentinel-5P OFFL CO: Offline Carbon Monoxide",
+        "description": "### OFFL/L3_CO\n\nThis dataset provides offline high-resolution imagery of CO concentrations.\n\nCarbon ..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_OFFL_L3_NO2",
+        "asset_id": "COPERNICUS/S5P/OFFL/L3_NO2",
+        "title": "Sentinel-5P OFFL NO2: Offline Nitrogen Dioxide",
+        "description": "### OFFL/L3_NO2\n\nThis dataset provides offline high-resolution imagery of NO<sub>2</sub> concentrati..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_OFFL_L3_CH4",
+        "asset_id": "COPERNICUS/S5P/OFFL/L3_CH4",
+        "title": "Sentinel-5P OFFL CH4: Offline Methane",
+        "description": "### OFFL/L3_CH4\n\nThis dataset provides offline high-resolution imagery of methane\nconcentrations.\n\nM..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_OFFL_L3_CLOUD",
+        "asset_id": "COPERNICUS/S5P/OFFL/L3_CLOUD",
+        "title": "Sentinel-5P OFFL CLOUD: Offline Cloud Properties",
+        "description": "### OFFL/L3_CLOUD\n\nThis dataset provides offline high-resolution imagery of cloud parameters.\n\nThe T..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_DEM_GLO30",
+        "asset_id": "COPERNICUS/DEM/GLO30",
+        "title": "Copernicus DEM GLO-30: Global 30m Digital Elevation Model",
+        "description": "The Copernicus DEM is a Digital Surface Model (DSM) which represents the\nsurface of the Earth includ..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_OFFL_L3_O3_TCL",
+        "asset_id": "COPERNICUS/S5P/OFFL/L3_O3_TCL",
+        "title": "Sentinel-5P OFFL O3 TCL: Offline Tropospheric Ozone",
+        "description": "### OFFL/L3_O3_TCL\n\nThis dataset provides offline tropospheric high-resolution imagery of ozone\nconc..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_OFFL_L3_SO2",
+        "asset_id": "COPERNICUS/S5P/OFFL/L3_SO2",
+        "title": "Sentinel-5P OFFL SO2: Offline Sulfur Dioxide",
+        "description": "### OFFL/L3_SO2\n\nThis dataset provides offline high-resolution imagery of atmospheric sulfur\ndioxide..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_OFFL_L3_O3",
+        "asset_id": "COPERNICUS/S5P/OFFL/L3_O3",
+        "title": "Sentinel-5P OFFL O3: Offline Ozone",
+        "description": "### OFFL/L3_O3\n\nThis dataset provides offline high-resolution imagery of total column ozone\nconcentr..."
+      },
+      {
+        "service_id": "GEE/COPERNICUS_S5P_OFFL_L3_AER_LH",
+        "asset_id": "COPERNICUS/S5P/OFFL/L3_AER_LH",
+        "title": "Sentinel-5P OFFL AER LH: Offline UV Aerosol Layer Height",
+        "description": "### OFFL/L3_AER_LH\n\nThis dataset provides offline high-resolution imagery of the UV Aerosol Index\n(U..."
+      },
+      {
+        "service_id": "GEE/JRC_LUCAS_HARMO_COPERNICUS_POLYGONS_V1_2018",
+        "asset_id": "JRC/LUCAS_HARMO/COPERNICUS_POLYGONS/V1/2018",
+        "title": "LUCAS Copernicus (Polygons with attributes, 2018) V1",
+        "description": "The\n[Land Use/Cover Area frame Survey (LUCAS)](https://ec.europa.eu/eurostat/web/lucas)\nin the Europ..."
+      },
+      {
+        "service_id": "GEE/LANDSAT_COMPOSITES_C02_T1_L2_32DAY_BAI",
+        "asset_id": "LANDSAT/COMPOSITES/C02/T1_L2_32DAY_BAI",
+        "title": "Landsat Collection 2 Tier 1 Level 2 32-Day BAI Composite",
+        "description": "These Landsat Collection 2 Tier 1 Level 2 composites are made from Tier 1 Level 2 orthorectified sce..."
+      },
+      {
+        "service_id": "GEE/LANDSAT_COMPOSITES_C02_T1_L2_32DAY_EVI",
+        "asset_id": "LANDSAT/COMPOSITES/C02/T1_L2_32DAY_EVI",
+        "title": "Landsat Collection 2 Tier 1 Level 2 32-Day EVI Composite",
+        "description": "These Landsat Collection 2 Tier 1 Level 2 composites are made from Tier 1 Level 2 orthorectified sce..."
+      },
+      {
+        "service_id": "GEE/LANDSAT_COMPOSITES_C02_T1_L2_32DAY_NBR",
+        "asset_id": "LANDSAT/COMPOSITES/C02/T1_L2_32DAY_NBR",
+        "title": "Landsat Collection 2 Tier 1 Level 2 32-Day NBR Composite",
+        "description": "These Landsat Collection 2 Tier 1 Level 2 composites are made from Tier 1 Level 2 orthorectified sce..."
+      },
+      {
+        "service_id": "GEE/LANDSAT_COMPOSITES_C02_T1_L2_32DAY_NDWI",
+        "asset_id": "LANDSAT/COMPOSITES/C02/T1_L2_32DAY_NDWI",
+        "title": "Landsat Collection 2 Tier 1 Level 2 32-Day NDWI Composite",
+        "description": "These Landsat Collection 2 Tier 1 Level 2 composites are made from Tier 1 Level 2 orthorectified sce..."
+      },
+      {
+        "service_id": "GEE/LANDSAT_COMPOSITES_C02_T1_L2_32DAY_NDVI",
+        "asset_id": "LANDSAT/COMPOSITES/C02/T1_L2_32DAY_NDVI",
+        "title": "Landsat Collection 2 Tier 1 Level 2 32-Day NDVI Composite",
+        "description": "These Landsat Collection 2 Tier 1 Level 2 composites are made from Tier 1 Level 2 orthorectified sce..."
+      },
+      {
+        "service_id": "GEE/LANDSAT_COMPOSITES_C02_T1_L2_8DAY_NDVI",
+        "asset_id": "LANDSAT/COMPOSITES/C02/T1_L2_8DAY_NDVI",
+        "title": "Landsat Collection 2 Tier 1 Level 2 8-Day NDVI Composite",
+        "description": "These Landsat Collection 2 Tier 1 Level 2 composites are made from Tier 1 Level 2 orthorectified sce..."
+      },
+      {
+        "service_id": "GEE/LANDSAT_COMPOSITES_C02_T1_L2_8DAY_BAI",
+        "asset_id": "LANDSAT/COMPOSITES/C02/T1_L2_8DAY_BAI",
+        "title": "Landsat Collection 2 Tier 1 Level 2 8-Day BAI Composite",
+        "description": "These Landsat Collection 2 Tier 1 Level 2 composites are made from Tier 1 Level 2 orthorectified sce..."
+      },
+      {
+        "service_id": "GEE/LANDSAT_COMPOSITES_C02_T1_L2_8DAY_NBR",
+        "asset_id": "LANDSAT/COMPOSITES/C02/T1_L2_8DAY_NBR",
+        "title": "Landsat Collection 2 Tier 1 Level 2 8-Day NBR Composite",
+        "description": "These Landsat Collection 2 Tier 1 Level 2 composites are made from Tier 1 Level 2 orthorectified sce..."
+      },
+      {
+        "service_id": "GEE/LANDSAT_COMPOSITES_C02_T1_L2_8DAY_NDWI",
+        "asset_id": "LANDSAT/COMPOSITES/C02/T1_L2_8DAY_NDWI",
+        "title": "Landsat Collection 2 Tier 1 Level 2 8-Day NDWI Composite",
+        "description": "These Landsat Collection 2 Tier 1 Level 2 composites are made from Tier 1 Level 2 orthorectified sce..."
+      },
+      {
+        "service_id": "GEE/LANDSAT_COMPOSITES_C02_T1_L2_ANNUAL_BAI",
+        "asset_id": "LANDSAT/COMPOSITES/C02/T1_L2_ANNUAL_BAI",
+        "title": "Landsat Collection 2 Tier 1 Level 2 Annual BAI Composite",
+        "description": "These Landsat Collection 2 Tier 1 Level 2 composites are made from Tier 1 Level 2 orthorectified sce..."
+      }
+    ],
+    "climate": [
+      {
+        "service_id": "GEE/ECMWF_CAMS_NRT",
+        "asset_id": "ECMWF/CAMS/NRT",
+        "title": "Copernicus Atmosphere Monitoring Service (CAMS) Global Near-Real-Time",
+        "description": "The Copernicus Atmosphere Monitoring Service provides the capacity to\ncontinuously monitor the compo..."
+      },
+      {
+        "service_id": "GEE/ECMWF_ERA5_DAILY",
+        "asset_id": "ECMWF/ERA5/DAILY",
+        "title": "ERA5 Daily Aggregates - Latest Climate Reanalysis Produced by ECMWF / Copernicus Climate Change Service",
+        "description": "ERA5 is the fifth generation ECMWF atmospheric reanalysis of the global climate.\nReanalysis combines..."
+      },
+      {
+        "service_id": "GEE/ECMWF_ERA5_LAND_HOURLY",
+        "asset_id": "ECMWF/ERA5_LAND/HOURLY",
+        "title": "ERA5-Land Hourly - ECMWF Climate Reanalysis",
+        "description": "ERA5-Land is a reanalysis dataset providing a consistent view of the\nevolution of land variables ove..."
+      },
+      {
+        "service_id": "GEE/ECMWF_ERA5_MONTHLY",
+        "asset_id": "ECMWF/ERA5/MONTHLY",
+        "title": "ERA5 Monthly Aggregates - Latest Climate Reanalysis Produced by ECMWF / Copernicus Climate Change Service",
+        "description": "ERA5 is the fifth generation ECMWF atmospheric reanalysis of the global climate.\nReanalysis combines..."
+      },
+      {
+        "service_id": "GEE/ECMWF_NRT_FORECAST_IFS_SCWV",
+        "asset_id": "ECMWF/NRT_FORECAST/IFS/SCWV",
+        "title": "ECMWF Near-Realtime IFS Wave (Short-Cutoff) Forecasts",
+        "description": "This dataset contains 6-day forecasts of the wave model fields generated by\nthe ECMWF Integrated For..."
+      },
+      {
+        "service_id": "GEE/ECMWF_NRT_FORECAST_IFS_WAVE",
+        "asset_id": "ECMWF/NRT_FORECAST/IFS/WAVE",
+        "title": "ECMWF Near-Realtime IFS Wave Forecasts",
+        "description": "This dataset contains 15-day forecasts of the wave model fields\ngenerated by the ECMWF Integrated Fo..."
+      },
+      {
+        "service_id": "GEE/ECMWF_ERA5_LAND_DAILY_AGGR",
+        "asset_id": "ECMWF/ERA5_LAND/DAILY_AGGR",
+        "title": "ERA5-Land Daily Aggregated - ECMWF Climate Reanalysis",
+        "description": "ERA5-Land is a reanalysis dataset providing a consistent view of the\nevolution of land variables ove..."
+      },
+      {
+        "service_id": "GEE/ECMWF_ERA5_LAND_MONTHLY",
+        "asset_id": "ECMWF/ERA5_LAND/MONTHLY",
+        "title": "ERA5-Land Monthly Averaged - ECMWF Climate Reanalysis [deprecated]",
+        "description": "ERA5-Land is a reanalysis dataset providing a consistent view of the\nevolution of land variables ove..."
+      },
+      {
+        "service_id": "GEE/ECMWF_ERA5_LAND_MONTHLY_BY_HOUR",
+        "asset_id": "ECMWF/ERA5_LAND/MONTHLY_BY_HOUR",
+        "title": "ERA5-Land Monthly Averaged by Hour of Day - ECMWF Climate Reanalysis",
+        "description": "ERA5-Land is a reanalysis dataset providing a consistent view of the evolution of land variables\nove..."
+      },
+      {
+        "service_id": "GEE/ECMWF_ERA5_LAND_MONTHLY_AGGR",
+        "asset_id": "ECMWF/ERA5_LAND/MONTHLY_AGGR",
+        "title": "ERA5-Land Monthly Aggregated - ECMWF Climate Reanalysis",
+        "description": "ERA5-Land is a reanalysis dataset providing a consistent view of the\nevolution of land variables ove..."
+      },
+      {
+        "service_id": "GEE/ECMWF_NRT_FORECAST_IFS_OPER",
+        "asset_id": "ECMWF/NRT_FORECAST/IFS/OPER",
+        "title": "ECMWF Near-Realtime IFS Atmospheric Forecasts",
+        "description": "This dataset contains 15-day forecasts of the atmospheric model variables\ngenerated by the ECMWF Int..."
+      },
+      {
+        "service_id": "GEE/NASA_GLDAS_V022_CLSM_G025_DA1D",
+        "asset_id": "NASA/GLDAS/V022/CLSM/G025/DA1D",
+        "title": "GLDAS-2.2: Global Land Data Assimilation System",
+        "description": "NASA Global Land Data Assimilation System Version 2 (GLDAS-2) has three\ncomponents: GLDAS-2.0, GLDAS..."
+      },
+      {
+        "service_id": "GEE/NASA_GLDAS_V021_NOAH_G025_T3H",
+        "asset_id": "NASA/GLDAS/V021/NOAH/G025/T3H",
+        "title": "GLDAS-2.1: Global Land Data Assimilation System",
+        "description": "NASA Global Land Data Assimilation System Version 2 (GLDAS-2) has three\ncomponents: GLDAS-2.0, GLDAS..."
+      },
+      {
+        "service_id": "GEE/NASA_GLDAS_V20_NOAH_G025_T3H",
+        "asset_id": "NASA/GLDAS/V20/NOAH/G025/T3H",
+        "title": "Reprocessed GLDAS-2.0: Global Land Data Assimilation System",
+        "description": "NASA Global Land Data Assimilation System Version 2 (GLDAS-2) has three\ncomponents: GLDAS-2.0, GLDAS..."
+      },
+      {
+        "service_id": "GEE/NASA_LANCE_NOAA20_VIIRS_C2",
+        "asset_id": "NASA/LANCE/NOAA20_VIIRS/C2",
+        "title": "VJ114IMGTDL_NRT Daily Raster: VIIRS (NOAA-20) Band 375m Active Fire",
+        "description": "NOAA-20 (JPSS-1) Visible Infrared Imaging Radiometer Suite (VIIRS) Active Fire detection\nproduct is ..."
+      },
+      {
+        "service_id": "GEE/NOAA_GFS0P25",
+        "asset_id": "NOAA/GFS0P25",
+        "title": "GFS: Global Forecast System 384-Hour Predicted Atmosphere Data",
+        "description": "The Global Forecast System (GFS) is a weather forecast model produced by\nthe National Centers for En..."
+      },
+      {
+        "service_id": "GEE/NOAA_PERSIANN-CDR",
+        "asset_id": "NOAA/PERSIANN-CDR",
+        "title": "PERSIANN-CDR: Precipitation Estimation From Remotely Sensed Information Using Artificial Neural Networks-Climate Data Record",
+        "description": "PERSIANN-CDR is a daily quasi-global precipitation product\nthat spans the period from 1983-01-01 to ..."
+      },
+      {
+        "service_id": "GEE/NOAA_CFSR",
+        "asset_id": "NOAA/CFSR",
+        "title": "CFSR: Climate Forecast System Reanalysis",
+        "description": "The National Centers for Environmental Prediction (NCEP) Climate Forecast\nSystem Reanalysis (CFSR) w..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_ATMOS_NEAR_SURFACE_V2",
+        "asset_id": "NOAA/CDR/ATMOS_NEAR_SURFACE/V2",
+        "title": "NOAA CDR: Ocean Near-Surface Atmospheric Properties, Version 2",
+        "description": "The Ocean Near-Surface Atmospheric Properties dataset is part of the NOAA\nOcean Surface Bundle (OSB)..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_AVHRR_AOT_V3",
+        "asset_id": "NOAA/CDR/AVHRR/AOT/V3",
+        "title": "NOAA CDR AVHRR AOT: Daily Aerosol Optical Thickness Over Global Oceans, v03 [deprecated]",
+        "description": "The NOAA Climate Data Record (CDR) of Aerosol Optical Thickness (AOT) is a\ncollection of global dail..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_AVHRR_LAI_FAPAR_V5",
+        "asset_id": "NOAA/CDR/AVHRR/LAI_FAPAR/V5",
+        "title": "NOAA CDR AVHRR LAI FAPAR: Leaf Area Index and Fraction of Absorbed Photosynthetically Active Radiation, Version 5",
+        "description": "The NOAA Climate Data Record (CDR) of AVHRR Leaf Area Index (LAI) and\nFraction of Absorbed Photosynt..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_AVHRR_AOT_V4",
+        "asset_id": "NOAA/CDR/AVHRR/AOT/V4",
+        "title": "NOAA CDR AVHRR AOT: Daily Aerosol Optical Thickness Over Global Oceans, v04",
+        "description": "The NOAA Climate Data Record (CDR) of Aerosol Optical Thickness (AOT) is a\ncollection of global dail..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_AVHRR_LAI_FAPAR_V4",
+        "asset_id": "NOAA/CDR/AVHRR/LAI_FAPAR/V4",
+        "title": "NOAA CDR AVHRR LAI FAPAR: Leaf Area Index and Fraction of Absorbed Photosynthetically Active Radiation, Version 4 [deprecated]",
+        "description": "The NOAA Climate Data Record (CDR) of AVHRR Leaf Area Index (LAI) and\nFraction of Absorbed Photosynt..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_AVHRR_SR_V4",
+        "asset_id": "NOAA/CDR/AVHRR/SR/V4",
+        "title": "NOAA CDR AVHRR: Surface Reflectance, Version 4 [deprecated]",
+        "description": "The NOAA Climate Data Record (CDR) of AVHRR Surface Reflectance contains\ngridded daily surface refle..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_HEAT_FLUXES_V2",
+        "asset_id": "NOAA/CDR/HEAT_FLUXES/V2",
+        "title": "NOAA CDR: Ocean Heat Fluxes, Version 2",
+        "description": "The Ocean Heat Fluxes dataset is part of the NOAA Ocean Surface Bundle (OSB)\nand provides a high qua..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_OISST_V2_1",
+        "asset_id": "NOAA/CDR/OISST/V2_1",
+        "title": "NOAA CDR OISST v02r01: Optimum Interpolation Sea Surface Temperature",
+        "description": "The NOAA 1/4 degree daily Optimum Interpolation Sea Surface Temperature\n(OISST) provides complete oc..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_OISST_V2",
+        "asset_id": "NOAA/CDR/OISST/V2",
+        "title": "NOAA CDR OISST v2: Optimum Interpolation Sea Surface Temperature [deprecated]",
+        "description": "The NOAA 1/4 degree daily Optimum Interpolation Sea Surface Temperature\n(OISST) provides complete oc..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_GRIDSAT-B1_V2",
+        "asset_id": "NOAA/CDR/GRIDSAT-B1/V2",
+        "title": "NOAA CDR GRIDSAT-B1: Geostationary IR Channel Brightness Temperature",
+        "description": "\nNote: This dataset has not been updated by the provider since 2024-03-31\ndue to ongoing infrastruct..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_AVHRR_SR_V5",
+        "asset_id": "NOAA/CDR/AVHRR/SR/V5",
+        "title": "NOAA CDR AVHRR: Surface Reflectance, Version 5",
+        "description": "The NOAA Climate Data Record (CDR) of AVHRR Surface Reflectance contains\ngridded daily surface refle..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_AVHRR_NDVI_V4",
+        "asset_id": "NOAA/CDR/AVHRR/NDVI/V4",
+        "title": "NOAA CDR AVHRR NDVI: Normalized Difference Vegetation Index, Version 4 [deprecated]",
+        "description": "The NOAA Climate Data Record (CDR) of AVHRR Normalized Difference Vegetation\nIndex (NDVI) contains g..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_AVHRR_NDVI_V5",
+        "asset_id": "NOAA/CDR/AVHRR/NDVI/V5",
+        "title": "NOAA CDR AVHRR NDVI: Normalized Difference Vegetation Index, Version 5",
+        "description": "The NOAA Climate Data Record (CDR) of AVHRR Normalized Difference Vegetation\nIndex (NDVI) contains g..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_VIIRS_LAI_FAPAR_V1",
+        "asset_id": "NOAA/CDR/VIIRS/LAI_FAPAR/V1",
+        "title": "NOAA CDR VIIRS LAI FAPAR: Leaf Area Index and Fraction of Absorbed Photosynthetically Active Radiation, Version 1",
+        "description": "This Climate Data Record (CDR) combines datasets for Leaf Area Index (LAI)\nand Fraction of Absorbed ..."
+      },
+      {
+        "service_id": "GEE/NOAA_CPC_Temperature",
+        "asset_id": "NOAA/CPC/Temperature",
+        "title": "CPC Global Unified Temperature",
+        "description": "This dataset provides a gridded analysis of daily surface air temperature\nover global land areas, in..."
+      },
+      {
+        "service_id": "GEE/NOAA_CFSV2_FOR6H",
+        "asset_id": "NOAA/CFSV2/FOR6H",
+        "title": "CFSV2: NCEP Climate Forecast System Version 2, 6-Hourly Products",
+        "description": "The National Centers for Environmental Prediction (NCEP) Climate Forecast\nSystem (CFS) is a fully co..."
+      },
+      {
+        "service_id": "GEE/NOAA_CPC_Precipitation",
+        "asset_id": "NOAA/CPC/Precipitation",
+        "title": "CPC Global Unified Gauge-Based Analysis of Daily Precipitation",
+        "description": "The CPC Unified Gauge-Based Analysis of Global Daily Precipitation dataset\noffers daily precipitatio..."
+      },
+      {
+        "service_id": "GEE/NOAA_NGDC_ETOPO1",
+        "asset_id": "NOAA/NGDC/ETOPO1",
+        "title": "ETOPO1: Global 1 Arc-Minute Elevation",
+        "description": "ETOPO1 is a 1 arc-minute global relief model of Earth''s\nsurface that integrates land topography and..."
+      },
+      {
+        "service_id": "GEE/NOAA_DMSP-OLS_NIGHTTIME_LIGHTS",
+        "asset_id": "NOAA/DMSP-OLS/NIGHTTIME_LIGHTS",
+        "title": "DMSP OLS: Nighttime Lights Time Series Version 4, Defense Meteorological Program Operational Linescan System",
+        "description": "The Defense Meteorological Program (DMSP) Operational Line-Scan System\n(OLS) has a unique capability..."
+      },
+      {
+        "service_id": "GEE/NOAA_DMSP-OLS_CALIBRATED_LIGHTS_V4",
+        "asset_id": "NOAA/DMSP-OLS/CALIBRATED_LIGHTS_V4",
+        "title": "DMSP OLS: Global Radiance-Calibrated Nighttime Lights Version 4, Defense Meteorological Program Operational Linescan System",
+        "description": "The Defense Meteorological Program (DMSP) Operational Line-Scan System\n(OLS) has a unique capability..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_VIIRS_NDVI_V1",
+        "asset_id": "NOAA/CDR/VIIRS/NDVI/V1",
+        "title": "NOAA CDR VIIRS NDVI: Normalized Difference Vegetation Index, Version 1",
+        "description": "This dataset contains gridded daily Normalized Difference Vegetation Index\n(NDVI) derived from the N..."
+      },
+      {
+        "service_id": "GEE/NOAA_GOES_16_FDCC",
+        "asset_id": "NOAA/GOES/16/FDCC",
+        "title": "GOES-16 FDCC Series ABI Level 2 Fire/Hot Spot Characterization CONUS",
+        "description": "[GOES](https://www.goes.noaa.gov) satellites are geostationary weather satellites run by NOAA.\n\nThe ..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_PATMOSX_V53",
+        "asset_id": "NOAA/CDR/PATMOSX/V53",
+        "title": "NOAA CDR PATMOSX: Cloud Properties, Reflectance, and Brightness Temperatures, Version 5.3",
+        "description": "This dataset provides high quality Climate Data Record (CDR) of multiple\ncloud properties along with..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_SST_WHOI_V2",
+        "asset_id": "NOAA/CDR/SST_WHOI/V2",
+        "title": "NOAA CDR WHOI: Sea Surface Temperature, Version 2",
+        "description": "The Sea Surface Temperature - WHOI dataset is part of the NOAA Ocean Surface\nBundle (OSB) and provid..."
+      },
+      {
+        "service_id": "GEE/NOAA_GOES_16_FDCF",
+        "asset_id": "NOAA/GOES/16/FDCF",
+        "title": "GOES-16 FDCF Series ABI Level 2 Fire/Hot Spot Characterization Full Disk",
+        "description": "[GOES](https://www.goes.noaa.gov) satellites are geostationary weather satellites run by NOAA.\n\nThe ..."
+      },
+      {
+        "service_id": "GEE/NOAA_GOES_17_FDCC",
+        "asset_id": "NOAA/GOES/17/FDCC",
+        "title": "GOES-17 FDCC Series ABI Level 2 Fire/Hot Spot Characterization CONUS",
+        "description": "[GOES](https://www.goes.noaa.gov) satellites are geostationary weather satellites run by NOAA.\n\nThe ..."
+      },
+      {
+        "service_id": "GEE/NOAA_GOES_17_FDCF",
+        "asset_id": "NOAA/GOES/17/FDCF",
+        "title": "GOES-17 FDCF Series ABI Level 2 Fire/Hot Spot Characterization Full Disk",
+        "description": "[GOES](https://www.goes.noaa.gov) satellites are geostationary weather satellites run by NOAA.\n\nThe ..."
+      },
+      {
+        "service_id": "GEE/NOAA_CDR_SST_PATHFINDER_V53",
+        "asset_id": "NOAA/CDR/SST_PATHFINDER/V53",
+        "title": "NOAA AVHRR Pathfinder Version 5.3 Collated Global 4km Sea Surface Temperature",
+        "description": "The AVHRR Pathfinder Version 5.3 Sea Surface Temperature dataset (PFV53)\nis a collection of global, ..."
+      },
+      {
+        "service_id": "GEE/NOAA_GOES_18_FDCC",
+        "asset_id": "NOAA/GOES/18/FDCC",
+        "title": "GOES-18 FDCC Series ABI Level 2 Fire/Hot Spot Characterization CONUS",
+        "description": "[GOES](https://www.goes.noaa.gov) satellites are geostationary weather satellites run by NOAA.\n\nThe ..."
+      },
+      {
+        "service_id": "GEE/NOAA_GOES_18_FDCF",
+        "asset_id": "NOAA/GOES/18/FDCF",
+        "title": "GOES-18 FDCF Series ABI Level 2 Fire/Hot Spot Characterization Full Disk",
+        "description": "[GOES](https://www.goes.noaa.gov) satellites are geostationary weather satellites run by NOAA.\n\nThe ..."
+      },
+      {
+        "service_id": "GEE/NOAA_GOES_16_MCMIPM",
+        "asset_id": "NOAA/GOES/16/MCMIPM",
+        "title": "GOES-16 MCMIPM Series ABI Level 2 Cloud and Moisture Imagery Mesoscale",
+        "description": "[GOES](https://www.goes.noaa.gov) satellites are geostationary weather satellites run by NOAA.\n\nThe ..."
+      },
+      {
+        "service_id": "GEE/NOAA_GOES_16_MCMIPF",
+        "asset_id": "NOAA/GOES/16/MCMIPF",
+        "title": "GOES-16 MCMIPF Series ABI Level 2 Cloud and Moisture Imagery Full Disk",
+        "description": "[GOES](https://www.goes.noaa.gov) satellites are geostationary weather satellites run by NOAA.\n\nThe ..."
+      }
+    ],
+    "vegetation": [
+      {
+        "service_id": "GEE/MODIS_006_MOD13A2",
+        "asset_id": "MODIS/006/MOD13A2",
+        "title": "MOD13A2.006 Terra Vegetation Indices 16-Day Global 1km [deprecated]",
+        "description": "The MOD13A2 V6 product provides two Vegetation Indices (VI): the Normalized\nDifference Vegetation In..."
+      },
+      {
+        "service_id": "GEE/MODIS_006_MOD13A1",
+        "asset_id": "MODIS/006/MOD13A1",
+        "title": "MOD13A1.006 Terra Vegetation Indices 16-Day Global 500m [deprecated]",
+        "description": "The MOD13A1 V6 product provides a Vegetation Index (VI)\nvalue at a per pixel basis. There are two pr..."
+      },
+      {
+        "service_id": "GEE/MODIS_006_MOD13Q1",
+        "asset_id": "MODIS/006/MOD13Q1",
+        "title": "MOD13Q1.006 Terra Vegetation Indices 16-Day Global 250m [deprecated]",
+        "description": "The MOD13Q1 V6 product provides a Vegetation Index (VI)\nvalue at a per pixel basis. There are two pr..."
+      },
+      {
+        "service_id": "GEE/MODIS_006_MOD17A2H",
+        "asset_id": "MODIS/006/MOD17A2H",
+        "title": "MOD17A2H.006: Terra Gross Primary Productivity 8-Day Global 500m [deprecated]",
+        "description": "The MOD17A2H V6 Gross Primary Productivity (GPP) product\nis a cumulative 8-day composite with a 500m..."
+      },
+      {
+        "service_id": "GEE/MODIS_006_MOD17A3HGF",
+        "asset_id": "MODIS/006/MOD17A3HGF",
+        "title": "MOD17A3HGF.006: Terra Net Primary Production  Gap-Filled Yearly Global 500m [deprecated]",
+        "description": "The MOD17A3HGF V6 product provides information about\nannual Net Primary Productivity (NPP) at 500m p..."
+      },
+      {
+        "service_id": "GEE/MODIS_006_MOD17A3H",
+        "asset_id": "MODIS/006/MOD17A3H",
+        "title": "MOD17A3H.006: Terra Net Primary Production Yearly Global 500m [deprecated]",
+        "description": "The MOD17A3H V6 product provides information about\nannual Net Primary Productivity (NPP) at 500m pix..."
+      }
+    ],
+    "terrain": [
+      {
+        "service_id": "GEE/NASA_NASADEM_HGT_001",
+        "asset_id": "NASA/NASADEM_HGT/001",
+        "title": "NASADEM: NASA 30m Digital Elevation Model",
+        "description": "NASADEM is a reprocessing of SRTM data, with improved accuracy by incorporating auxiliary data\nfrom ..."
+      },
+      {
+        "service_id": "GEE/USGS_SRTMGL1_003",
+        "asset_id": "USGS/SRTMGL1_003",
+        "title": "NASA SRTM Digital Elevation 30m",
+        "description": "The Shuttle Radar Topography Mission (SRTM, see [Farr\net al. 2007](https://onlinelibrary.wiley.com/d..."
+      }
+    ],
+    "population": [
+      {
+        "service_id": "GEE/JRC_GHSL_P2016_SMOD_POP_GLOBE_V1",
+        "asset_id": "JRC/GHSL/P2016/SMOD_POP_GLOBE_V1",
+        "title": "GHSL: Global Human Settlement Layers, Settlement Grid 1975-1990-2000-2014 (P2016) [deprecated]",
+        "description": "The GHSL relies on the design and implementation of new spatial data mining\ntechnologies allowing to..."
+      },
+      {
+        "service_id": "GEE/JRC_GHSL_P2023A_GHS_POP",
+        "asset_id": "JRC/GHSL/P2023A/GHS_POP",
+        "title": "GHSL: Global population surfaces 1975-2030 (P2023A)",
+        "description": "This raster dataset depicts the spatial distribution of residential\npopulation, expressed as the abs..."
+      },
+      {
+        "service_id": "GEE/JRC_GHSL_P2023A_GHS_BUILT_C",
+        "asset_id": "JRC/GHSL/P2023A/GHS_BUILT_C",
+        "title": "GHSL: Global settlement characteristics (10 m) 2018 (P2023A)",
+        "description": "This spatial raster dataset delineates human settlements at 10 m resolution,\nand describes their inn..."
+      },
+      {
+        "service_id": "GEE/JRC_GHSL_P2023A_GHS_BUILT_H",
+        "asset_id": "JRC/GHSL/P2023A/GHS_BUILT_H",
+        "title": "GHSL: Global building height 2018 (P2023A)",
+        "description": "This spatial raster dataset depicts the global distribution of building\nheights at a resolution of 1..."
+      },
+      {
+        "service_id": "GEE/JRC_GHSL_P2016_BUILT_LDSMT_GLOBE_V1",
+        "asset_id": "JRC/GHSL/P2016/BUILT_LDSMT_GLOBE_V1",
+        "title": "GHSL: Global Human Settlement Layers, Built-Up Grid 1975-1990-2000-2015 (P2016) [deprecated]",
+        "description": "The GHSL relies on the design and implementation of new spatial data mining\ntechnologies allowing to..."
+      },
+      {
+        "service_id": "GEE/JRC_GHSL_P2023A_GHS_SMOD_V2-0",
+        "asset_id": "JRC/GHSL/P2023A/GHS_SMOD_V2-0",
+        "title": "GHSL: Degree of Urbanization 1975-2030 V2-0 (P2023A)",
+        "description": "This raster dataset represents a global, multitemporal rural-urban\nclassification, applying the \"Deg..."
+      },
+      {
+        "service_id": "GEE/JRC_GHSL_P2023A_GHS_BUILT_S_10m",
+        "asset_id": "JRC/GHSL/P2023A/GHS_BUILT_S_10m",
+        "title": "GHSL: Global built-up surface 10m (P2023A)",
+        "description": "This raster dataset depicts the distribution of built-up surfaces,\nexpressed in square metres per 10..."
+      },
+      {
+        "service_id": "GEE/JRC_GHSL_P2023A_GHS_BUILT_V",
+        "asset_id": "JRC/GHSL/P2023A/GHS_BUILT_V",
+        "title": "GHSL: Global building volume 1975-2030 (P2023A)",
+        "description": "This raster dataset depicts the global distribution of building volume,\nexpressed in cubic metres pe..."
+      },
+      {
+        "service_id": "GEE/JRC_GHSL_P2023A_GHS_BUILT_S",
+        "asset_id": "JRC/GHSL/P2023A/GHS_BUILT_S",
+        "title": "GHSL: Global built-up surface 1975-2030 (P2023A)",
+        "description": "This raster dataset depicts the distribution of built-up surfaces,\nexpressed in square metres per 10..."
+      },
+      {
+        "service_id": "GEE/JRC_GHSL_P2016_POP_GPW_GLOBE_V1",
+        "asset_id": "JRC/GHSL/P2016/POP_GPW_GLOBE_V1",
+        "title": "GHSL: Global Human Settlement Layers, Population Grid 1975-1990-2000-2015 (P2016) [deprecated]",
+        "description": "The GHSL relies on the design and implementation of new spatial data mining\ntechnologies allowing to..."
+      },
+      {
+        "service_id": "GEE/JRC_GHSL_P2023A_GHS_SMOD",
+        "asset_id": "JRC/GHSL/P2023A/GHS_SMOD",
+        "title": "GHSL: Degree of Urbanization 1975-2030 (P2023A) [deprecated]",
+        "description": "This raster dataset represents a global, multitemporal rural-urban\nclassification, applying the \"Deg..."
+      },
+      {
+        "service_id": "GEE/WorldPop_GP_100m_pop",
+        "asset_id": "WorldPop/GP/100m/pop",
+        "title": "WorldPop Global Project Population Data: Estimated Residential Population per 100x100m Grid Square",
+        "description": "Global high-resolution, contemporary data on human population distributions are\na prerequisite for t..."
+      },
+      {
+        "service_id": "GEE/WorldPop_GP_100m_pop_age_sex",
+        "asset_id": "WorldPop/GP/100m/pop_age_sex",
+        "title": "WorldPop Global Project Population Data: Estimated Age and Sex Structures of Residential Population per 100x100m Grid Square",
+        "description": "Global high-resolution, contemporary data on human population distributions are\na prerequisite for t..."
+      },
+      {
+        "service_id": "GEE/WorldPop_GP_100m_pop_age_sex_cons_unadj",
+        "asset_id": "WorldPop/GP/100m/pop_age_sex_cons_unadj",
+        "title": "WorldPop Global Project Population Data: Constrained Estimated Age and Sex Structures of Residential Population per 100x100m Grid Square",
+        "description": "Global high-resolution, contemporary data on human population distributions are\na prerequisite for t..."
+      },
+      {
+        "service_id": "GEE/WorldPop_POP",
+        "asset_id": "WorldPop/POP",
+        "title": "WorldPop Project Population Data: Estimated Residential Population per 100x100m Grid Square [deprecated]",
+        "description": "High-resolution, contemporary data on human population distributions are\na prerequisite for the accu..."
+      }
+    ]
+  },
+  "searchable_assets": {}
+}

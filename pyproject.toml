@@ -1,0 +1,100 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "workflow-16s"
+version = "2.0.0"
+description = "A modular, extensible microbial community analysis pipeline for 16S rRNA amplicon sequencing data"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Heather MacGregor", email = "your.email@example.com"}
+]
+keywords = ["bioinformatics", "16S", "microbiome", "qiime2", "amplicon", "sequencing"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+dependencies = [
+    "numpy>=1.21.0",
+    "pandas>=1.3.0",
+    "scipy>=1.7.0",
+    "scikit-learn>=1.0.0",
+    "scanpy>=1.9.0",
+    "anndata>=0.8.0",
+    "plotly>=5.0.0",
+    "catboost>=1.0.0",
+    "requests>=2.26.0",
+    "pyyaml>=5.4.0",
+    "tqdm>=4.62.0",
+    "rich>=10.0.0",
+    "jinja2>=3.0.0",
+    "psutil>=5.8.0",
+    "joblib>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0",
+    "black>=22.0.0",
+    "flake8>=4.0.0",
+    "mypy>=0.950",
+]
+qiime2 = [
+    # QIIME 2 should be installed separately via conda
+    # These are placeholder references
+]
+geo = [
+    "geopandas>=0.10.0",
+    "shapely>=1.8.0",
+    "folium>=0.12.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/heathermacgregor/workflow_16s"
+Documentation = "https://heathermacgregor.github.io/workflow_16s"
+Repository = "https://github.com/heathermacgregor/workflow_16s"
+Issues = "https://github.com/heathermacgregor/workflow_16s/issues"
+
+[project.scripts]
+workflow-16s-upstream = "workflow_16s.upstream.cli:main"
+workflow-16s-downstream = "workflow_16s.downstream.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["workflow_16s*"]
+exclude = ["workflow_16s._to_sort*", "workflow_16s.early_testing*"]
+
+[tool.setuptools.package-data]
+workflow_16s = [
+    "*.yaml",
+    "*.json",
+    "*.tsv",
+    "*.txt",
+    "templates/*.html",
+    "templates/*.jinja2",
+]
+
+[tool.black]
+line-length = 100
+target-version = ['py39', 'py310', 'py311']
+include = '\.pyi?$'
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"

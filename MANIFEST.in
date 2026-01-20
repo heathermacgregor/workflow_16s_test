@@ -1,0 +1,32 @@
+# MANIFEST.in for workflow_16s
+
+# Include documentation
+include README.md
+include LICENSE
+include CHANGELOG*.md
+include *.md
+
+# Include configuration files
+recursive-include config *.yaml *.yml
+
+# Include reference data metadata (not the large classifier files)
+recursive-include references *.txt *.tsv *.yaml *.yml
+exclude references/classifier/**
+
+# Include templates
+recursive-include src/workflow_16s/templates *.html *.jinja2 *.css *.js
+
+# Exclude development and cache files
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude *$py.class
+global-exclude *.so
+global-exclude .DS_Store
+recursive-exclude * .git*
+recursive-exclude * .ipynb_checkpoints
+recursive-exclude src/workflow_16s/_to_sort *
+recursive-exclude src/workflow_16s/early_testing *
+prune src/cache
+prune src/logs
+prune src/figures
+prune src/data

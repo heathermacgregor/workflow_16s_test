@@ -1,0 +1,8 @@
+target_subfragment: V6-V8
+pcr_primer_fwd_seq: CAACGCGAAGAACCTTACC
+pcr_primer_rev_seq: ACGGGCGGTGTGTRC
+dataset_name: Oak Ridge Field Research Center
+dataset_id: ENA_PRJEB2206
+library_layout: single
+instrument_platform: '454'
+instrument_model: GS FLX

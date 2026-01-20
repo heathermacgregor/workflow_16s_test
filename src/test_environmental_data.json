@@ -1,0 +1,387 @@
+[
+  {
+    "location": {
+      "lat": 37.7749,
+      "lon": -122.4194,
+      "collection_date": "2025-10-14"
+    },
+    "SoilGrids": {
+      "bdod_0-5cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "bdod_5-15cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "bdod_15-30cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "bdod_30-60cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "bdod_60-100cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "bdod_100-200cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "cec_0-5cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "cec_5-15cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "cec_15-30cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "cec_30-60cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "cec_60-100cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "cec_100-200cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "clay_0-5cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "clay_5-15cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "clay_15-30cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "clay_30-60cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "clay_60-100cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "clay_100-200cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "nitrogen_0-5cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "nitrogen_5-15cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "nitrogen_15-30cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "nitrogen_30-60cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "nitrogen_60-100cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "nitrogen_100-200cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "phh2o_0-5cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "phh2o_5-15cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "phh2o_15-30cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "phh2o_30-60cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "phh2o_60-100cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "phh2o_100-200cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "sand_0-5cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "sand_5-15cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "sand_15-30cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "sand_30-60cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "sand_60-100cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "sand_100-200cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "silt_0-5cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "silt_5-15cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "silt_15-30cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "silt_30-60cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "silt_60-100cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "silt_100-200cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "soc_0-5cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "soc_5-15cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "soc_15-30cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "soc_30-60cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "soc_60-100cm": {
+        "value": null,
+        "unit": "value"
+      },
+      "soc_100-200cm": {
+        "value": null,
+        "unit": "value"
+      }
+    },
+    "RadNet": {
+      "error": "Could not retrieve RadNet monitor list."
+    },
+    "NWS": {
+      "forecast_periods": [
+        {
+          "number": 1,
+          "name": "This Afternoon",
+          "startTime": "2025-10-14T13:00:00-07:00",
+          "endTime": "2025-10-14T18:00:00-07:00",
+          "isDaytime": true,
+          "temperature": 62,
+          "temperatureUnit": "F",
+          "temperatureTrend": "",
+          "probabilityOfPrecipitation": {
+            "unitCode": "wmoUnit:percent",
+            "value": 45
+          },
+          "windSpeed": "5 to 8 mph",
+          "windDirection": "NW",
+          "icon": "https://api.weather.gov/icons/land/day/rain_showers,50?size=medium",
+          "shortForecast": "Chance Rain Showers",
+          "detailedForecast": "A chance of rain showers. Mostly cloudy. High near 62, with temperatures falling to around 60 in the afternoon. Northwest wind 5 to 8 mph. Chance of precipitation is 50%. New rainfall amounts less than a tenth of an inch possible."
+        },
+        {
+          "number": 2,
+          "name": "Tonight",
+          "startTime": "2025-10-14T18:00:00-07:00",
+          "endTime": "2025-10-15T06:00:00-07:00",
+          "isDaytime": false,
+          "temperature": 54,
+          "temperatureUnit": "F",
+          "temperatureTrend": "",
+          "probabilityOfPrecipitation": {
+            "unitCode": "wmoUnit:percent",
+            "value": 35
+          },
+          "windSpeed": "3 to 7 mph",
+          "windDirection": "S",
+          "icon": "https://api.weather.gov/icons/land/night/rain_showers,40/rain_showers,20?size=medium",
+          "shortForecast": "Chance Rain Showers",
+          "detailedForecast": "A chance of rain showers before 5am. Mostly cloudy, with a low around 54. South wind 3 to 7 mph. Chance of precipitation is 40%."
+        },
+        {
+          "number": 3,
+          "name": "Wednesday",
+          "startTime": "2025-10-15T06:00:00-07:00",
+          "endTime": "2025-10-15T18:00:00-07:00",
+          "isDaytime": true,
+          "temperature": 66,
+          "temperatureUnit": "F",
+          "temperatureTrend": "",
+          "probabilityOfPrecipitation": {
+            "unitCode": "wmoUnit:percent",
+            "value": 9
+          },
+          "windSpeed": "3 to 8 mph",
+          "windDirection": "SSW",
+          "icon": "https://api.weather.gov/icons/land/day/sct?size=medium",
+          "shortForecast": "Mostly Sunny",
+          "detailedForecast": "Mostly sunny, with a high near 66. South southwest wind 3 to 8 mph."
+        },
+        {
+          "number": 4,
+          "name": "Wednesday Night",
+          "startTime": "2025-10-15T18:00:00-07:00",
+          "endTime": "2025-10-16T06:00:00-07:00",
+          "isDaytime": false,
+          "temperature": 54,
+          "temperatureUnit": "F",
+          "temperatureTrend": "",
+          "probabilityOfPrecipitation": {
+            "unitCode": "wmoUnit:percent",
+            "value": 0
+          },
+          "windSpeed": "2 to 8 mph",
+          "windDirection": "NW",
+          "icon": "https://api.weather.gov/icons/land/night/few?size=medium",
+          "shortForecast": "Mostly Clear",
+          "detailedForecast": "Mostly clear, with a low around 54. Northwest wind 2 to 8 mph."
+        }
+      ]
+    },
+    "SevereWeather": {
+      "alerts": []
+    },
+    "USGS_Earthquake": {
+      "earthquakes": [
+        {
+          "magnitude": 2.53,
+          "location": "14 km WSW of Patterson, CA",
+          "time_utc": "2025-10-14 01:44:43 UTC",
+          "details_url": "https://earthquake.usgs.gov/earthquakes/eventpage/nc75248996"
+        }
+      ],
+      "count": 1
+    },
+    "NOAA_Tides": {
+      "station_name": "San Francisco",
+      "station_id": "9414290",
+      "distance_km": 5.37,
+      "measurements": {
+        "Water Level": "3.65 ft",
+        "Wind": "9.33 knots from 359.0\u00b0",
+        "Air Temperature": "55.22 \u00b0F",
+        "Air Pressure": "1007.22 mb"
+      },
+      "observation_date": "2025-10-14"
+    },
+    "SoilState": {
+      "error": "API returned no data."
+    },
+    "OpenMeteo": {
+      "time": [
+        "2025-10-14"
+      ],
+      "temperature_2m_mean": [
+        13.1
+      ],
+      "relative_humidity_2m_mean": [
+        80
+      ],
+      "precipitation_sum": [
+        1.0
+      ]
+    },
+    "EnvironmentalHealth": {
+      "daily_avg_pm10": "9.93 \u03bcg/m\u00b3",
+      "daily_avg_pm2_5": "7.8 \u03bcg/m\u00b3",
+      "daily_avg_ozone": "73.12 \u03bcg/m\u00b3",
+      "date": "2025-10-14"
+    },
+    "Meteostat": {
+      "meteostat_tavg": 12.7,
+      "meteostat_tmin": 10.0,
+      "meteostat_tmax": 15.0,
+      "meteostat_prcp": 0.3,
+      "meteostat_snow": null,
+      "meteostat_wdir": null,
+      "meteostat_wspd": 6.5,
+      "meteostat_wpgt": null,
+      "meteostat_pres": 1008.3,
+      "meteostat_tsun": null
+    },
+    "iNaturalist": {
+      "observations": [
+        {
+          "species": null,
+          "observed_on": "2025-10-14 17:05:52-07:00",
+          "user": "derek_tran1",
+          "photo_url": "https://static.inaturalist.org/photos/580372994/square.jpg",
+          "inaturalist_url": "https://www.inaturalist.org/observations/320951142"
+        },
+        {
+          "species": "slime molds",
+          "observed_on": "2025-10-14 16:59:02",
+          "user": "edith1111",
+          "photo_url": "https://inaturalist-open-data.s3.amazonaws.com/photos/580373080/square.jpg",
+          "inaturalist_url": "https://www.inaturalist.org/observations/320951176"
+        },
+        {
+          "species": null,
+          "observed_on": "2025-10-14 16:44:56",
+          "user": "tombosan33",
+          "photo_url": "https://inaturalist-open-data.s3.amazonaws.com/photos/580372474/square.jpg",
+          "inaturalist_url": "https://www.inaturalist.org/observations/320950919"
+        },
+        {
+          "species": "Northern Mockingbird",
+          "observed_on": "2025-10-14 16:35:25",
+          "user": "mark01",
+          "photo_url": "https://static.inaturalist.org/photos/580364807/square.jpg",
+          "inaturalist_url": "https://www.inaturalist.org/observations/320946916"
+        },
+        {
+          "species": "snowberries",
+          "observed_on": "2025-10-14 16:31:30",
+          "user": "shanft07",
+          "photo_url": "https://inaturalist-open-data.s3.amazonaws.com/photos/580364705/square.jpg",
+          "inaturalist_url": "https://www.inaturalist.org/observations/320946450"
+        }
+      ],
+      "count": 5
+    }
+  }
+]

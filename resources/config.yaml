@@ -1,0 +1,445 @@
+##########################################################################################################################################
+# CONFIG FILE
+##########################################################################################################################################
+
+# Project Info
+project:
+  name: "nuclear_fuel_cycle_contamination"
+  base_path: "/usr2/people/macgregor/amplicon/"
+  
+verbose: True
+
+# HARDWARE
+cpu:
+  limit: 32  # Global CPU limit for all operations
+
+# PATHS
+dataset_list: "../resources/datasets.txt" # List of datasets
+dataset_info: "../resources/datasets.tsv" # Dataset metadata
+manual_metadata_dir: "../../../manual_metadata" # Dataset sample metadata (manually collected)
+project_dir: "../../test" # Output directory
+
+# CREDENTIALS
+ena_email: "macgregor@berkeley.edu" # ENA API
+credentials:
+  ena_email: "macgregor@berkeley.edu"
+  ENA_EMAIL: "macgregor@berkeley.edu"
+  MY_EMAIL: "macgregor@berkeley.edu"
+  mindat_api_key: "ee6cec6c0c15e4e2960871477dbfb072" # MinDat API key (optional, for NFC facility matching)
+  AIRNOW_API_KEY: "3B2E33D0-0102-4A2A-ABE8-08211D3E1D25" # AirNow API key (optional, for NFC facility matching)
+  USGS_API_KEY: "Gx6sR3yF8kJtnFv6ZsJjW4EYZal15prWmB8f2bNc" # USGS API key (optional, for NFC facility matching)
+  NCBI_API_KEY: "4c94f710e470be18d4ef4de1debb0d804c09"
+  NREL_API_KEY: "th4maNQ0TRcRGF2rankEwQesZ0w2Ifyo3irCGTtB" # NREL API key (optional, for NFC facility matching)
+  OPENAQ_API_KEY: "fbd5f9bb2330a8b50c531f30b142ccbdd611fd6f0da30fdde3eb5385078a2d2b" # OpenAQ API key (optional, for NFC facility matching)
+  GEE_PROJECT: 'wired-day-365517' # Google Earth Engine project (optional, for NFC facility matching)
+
+##########################################################################################################################################
+# UPSTREAM
+##########################################################################################################################################
+upstream: 
+  enabled: False
+
+datasets: 
+  list: "/usr2/people/macgregor/amplicon/workflow_16s/resources/input/example_01/datasets.txt" # List of datasets
+  info: "/usr2/people/macgregor/amplicon/workflow_16s/resources/input/example_01/datasets.tsv" # Dataset metadata
+
+metadata:
+  manual_dir: "/usr2/people/macgregor/manual_metadata" # Dataset sample metadata (manually collected)
+  filters:
+    amplicon: True # Filter metadata to include only samples with this amplicon type (set to None to disable)
+    no_host: True   # Exclude samples labeled as 'host-associated' in the 'env_biome' metadata field
+  nfc_facilities:
+    enabled: True
+    use_local: True
+    databases:
+      - name: "DNFSB"
+      - name: "MinDat"
+      - name: "GEM"
+      - name: "NFCIS"
+    max_distance_km: 50
+    match_existing_samples: True
+    fetch_nearby_samples: False
+    maps:
+      enabled: True
+
+# 16S Processing
+sequences:
+  ena: 
+    max_concurrent: 16 # Max concurrent ENA downloads
+  pcr_primers:
+    mode: "manual" # PCR primers are manually provided ("manual") or predicted based on sequence alignment ("auto")
+    blast_db: "/usr2/people/macgregor/blast_db/SILVA_16S_db" # Path to the directory containing your BLAST DB
+    n_threads: 16
+  target_subfragment: "any" # Specify a target 16S rRNA subfragment or "any"
+  quality_control:
+    fastqc:
+      enabled: False
+      cleanup: True 
+    seqkit:
+      enabled: False
+  validate_16s: # Validate sequences based on sequence alignment
+    enabled: False
+    n_runs: 10
+    run_targets: ["16S", "unknown"]
+  trim:
+    cutadapt: # Trim sequences with CutAdapt before importing to QIIME
+      enabled: False
+      start_trim: 0
+      end_trim: 0
+      start_q_cutoff: 30
+      end_q_cutoff: 15
+      min_seq_length: 150
+      n_cores: 16
+  
+pcr_primers_mode: "manual" # PCR primers are manually provided ("manual") or predicted based on sequence alignment ("auto")
+target_subfragment_mode: "any" # Specify a target 16S rRNA subfragment or "any"
+blast_db_dir: "/usr2/people/macgregor/blast_db/SILVA_16S_db" # Path to the directory containing your BLAST DB
+
+fastqc:
+  enabled: False
+
+seqkit:
+  enabled: False
+
+validate_16s: # Validate sequences based on sequence alignment
+  enabled: False
+  n_runs: 10
+  run_targets:
+    - "16S"
+    - "unknown"
+
+cutadapt: # Trim sequences with CutAdapt before importing to QIIME
+  enabled: False
+  start_trim: 0
+  end_trim: 0
+  start_q_cutoff: 30
+  end_q_cutoff: 15
+  min_seq_length: 150
+  n_cores: 16
+
+qiime2: # QIIME 
+  per_dataset:
+    script_path: "../src/workflow_16s/api/qiime/_workflow.py"
+    hard_rerun: False
+    trim:
+      enabled: True # Set to "False" if cutadapt > enabled is "True"
+    denoise:
+      chimera_method: "consensus"
+      denoise_algorithm: "DADA2"
+    taxonomy:
+      classifier_dir: "./classifier/silva-138-99-515-806"
+      classifier: "silva-138-99-515-806"
+      classify_method: "sklearn"
+    filter:
+      retain_threshold: 80
+    
+clean_fastqc: 
+  enabled: True
+
+##########################################################################################################################################
+# DOWNSTREAM
+##########################################################################################################################################
+downstream: 
+  enabled: False
+  find_subsets: False
+
+group_column: "nuclear_contamination_status" # The metadata column that defines categorical groups of samples
+group_column_type: "bool"
+group_column_values: 
+  - True
+  - False 
+
+metadata_id_column: "#sampleid"
+dataset_column: "dataset_name"
+group_columns:
+  - name: "nuclear_contamination_status"
+    type: "bool"
+    values:
+      - True
+      - False
+
+
+# NFC Facilities
+nfc_facilities:
+  enabled: True
+  use_local: True
+  databases:
+    - name: "DNFSB"
+    - name: "MinDat"
+    - name: "GEM"
+    - name: "NFCIS"
+  max_distance_km: 50
+  match_existing_samples: True
+  fetch_nearby_samples: False
+  maps:
+    enabled: True
+
+
+# Metadata Dashboard
+dashboard:
+  enabled: False
+
+# Sample Maps
+maps:
+  enabled: False
+  color_columns:
+    - "dataset_name"
+    - "nuclear_contamination_status"
+    - "env_feature"
+    - "env_material"
+    - "country"
+    - "facility_match"
+
+
+# 02. Feature Table Preprocessing
+# Toggle which processing steps will be performed on the merged feature table prior to analysis.
+features: 
+  load_existing: False
+  filter: True
+  normalize: True
+  clr_transform: True
+  presence_absence: True
+
+
+# 03. Alpha Diversity
+alpha_diversity: 
+  enabled: True
+  plots: 
+    enabled: True
+    add_points: True
+    add_stat_annot: True
+    effect_size_threshold: 0.5
+  parametric: False                  # Statistical test type
+  correlation_analysis: 
+    enabled: False
+    max_categories: 20               # Max unique values for categorical variables
+    min_group_size: 5                # Min samples per group for valid comparison
+    top_n_correlations: 20           # Number of top associations to show
+  tables: 
+    raw:  
+      enabled: True
+      levels:  
+        - "genus"
+        - "family"
+        - "class"
+    normalized:
+      enabled: True
+      levels: 
+        - "genus"
+        - "family"
+  metrics:                           # Disabled: "ace", "chao1", "dominance", "gini_index", "goods_coverage"
+    - "shannon"
+    - "observed_features"
+    - "simpson"
+    - "pielou_evenness"
+    - "heip_evenness" 
+    
+
+
+# Statistical Analyses
+stats: 
+  enabled: True
+  load_existing: False #True
+  max_workers: 8
+  advanced_analysis:
+    enabled: True
+    core_microbiome_analysis:
+      enabled: True
+      prevalence_threshold: 0.8
+      abundance_threshold: 0.01
+    batch_correlation:
+      enabled: True
+    network_analysis:
+      enabled: True
+  tables:
+    raw:
+      enabled: True
+      tests:
+        - "mwu_bonferroni"       
+        - "kruskal_bonferroni"
+    presence_absence:
+      enabled: True
+      tests:
+        - "fisher"                
+    filtered:
+      enabled: True
+      tests:
+        - "mwu_bonferroni"
+        - "kruskal_bonferroni"
+    normalized:
+      enabled: True
+      tests:
+        - "ttest"                 
+        - "mwu_bonferroni"       
+        - "kruskal_bonferroni"
+    clr_transformed:
+      enabled: True
+      tests:
+        - "ttest"                 
+        - "mwu_bonferroni"        
+        - "kruskal_bonferroni"
+
+
+
+
+
+# Beta Diversity (Ordination)
+beta_diversity: 
+  enabled: True
+  load_existing: False # BROKEN
+  max_workers: 2       # Max concurrent ordination tasks
+  cpu_limit: 16        # CPU cores per ordination method
+  tables:
+    raw:
+      enabled: True
+      pcoa_metric: "braycurtis"
+      methods:
+        #- "pca"
+        - "pcoa"
+        #- "tsne"
+        #- "umap"
+      levels:
+        - "genus"
+        #- "family"
+        #- "class"
+    filtered:
+      enabled: True
+      pcoa_metric: "braycurtis"
+      methods:
+        #- "pca"
+        - "pcoa"
+        - "tsne"
+        - "umap"
+      levels:
+        - "genus"
+        - "phylum"
+    normalized:
+      enabled: True
+      pcoa_metric: "braycurtis"
+      methods:
+        - "pca"
+        - "pcoa"
+        - "tsne"
+        - "umap"
+      levels:
+        #- "genus"
+        - "phylum"
+    clr_transformed:
+      enabled: True
+      pcoa_metric: "euclidean"
+      methods:
+        - "pca"
+        - "pcoa"
+        - "tsne"
+        - "umap"
+      levels:
+        - "genus"
+        - "phylum"
+    presence_absence:
+      enabled: True
+      pcoa_metric: "jaccard"
+      methods:
+        #- "pca"
+        - "pcoa"
+        - "tsne"
+        - "umap"
+      levels:
+        - "genus"
+        - "phylum"
+
+
+# Machine Learning Feature Selection with CatBoost
+ml: 
+  enabled: True
+  load_existing: False
+  n_threads: 32
+  num_features: 500
+  step_size: 100
+  permutation_importance: 
+    enabled: True
+  plots:
+    enabled: True
+  tables:
+    raw:
+      enabled: True
+      levels:
+        - "genus"
+      methods:
+        - "rfe"
+        #- "select_k_best"
+        #- "chi_squared"
+        #- "lasso"
+        #- "shap"
+    filtered:
+      enabled: True
+      levels:
+        - "genus"
+      methods:
+        - "rfe"
+        - "select_k_best"
+        #- "chi_squared"
+        #- "lasso"
+        #- "shap"
+    normalized:
+      enabled: True
+      levels:
+        - "genus"
+      methods:
+        - "rfe"
+        - "select_k_best"
+        - "chi_squared"
+        - "lasso"
+        - "shap"
+    clr_transformed:
+      enabled: True
+      levels:
+        #- "genus"
+        - "family"
+        #- "order"
+        #- "class"
+        #- "phylum"
+      methods:
+        - "rfe"
+        #- "select_k_best"
+        #- "chi_squared"
+        #- "lasso"
+        #- "shap"
+    presence_absence:
+      enabled: True
+      levels:
+        #- "genus"
+        - "family"
+        #- "order"
+        #- "class"
+        #- "phylum"
+      methods:
+        - "rfe"
+        #- "select_k_best"
+        #- "chi_squared"
+        #- "lasso"
+        #- "shap"
+  
+
+# Functional Prediction
+faprotax: 
+  enabled: True
+
+
+# Top Features
+top_features:
+  enabled: True
+  n: 30                 # Number of top features
+  stats:
+    enabled: True
+  models:
+    enabled: True
+  violin_plots:         # Violin plots of top important features
+    enabled: True
+    n: 30               # Number of features to plot per category
+  feature_maps:         # Feature maps of top important features
+    enabled: True
+    n: 30 
+    
+feature_maps:
+  enabled: True
+  n: 30

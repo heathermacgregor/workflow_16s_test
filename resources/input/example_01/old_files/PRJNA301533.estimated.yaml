@@ -1,0 +1,4 @@
+target_subfragment: V6-V8
+pcr_primer_fwd_seq: CAACGCGAAGAACCTTACC
+pcr_primer_rev_seq: ACGGGCGGTGTGTRC
+dataset_id: PRJNA301533

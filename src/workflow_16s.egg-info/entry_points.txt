@@ -1,0 +1,3 @@
+[console_scripts]
+workflow-16s-downstream = workflow_16s.downstream.cli:main
+workflow-16s-upstream = workflow_16s.upstream.cli:main

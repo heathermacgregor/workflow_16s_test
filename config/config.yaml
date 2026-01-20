@@ -1,0 +1,850 @@
+# ===================================================================
+#                      16S WORKFLOW CONFIGURATION
+# ===================================================================
+
+# -------------------------------------------------------------------
+#  Paths & Directories 📂
+# -------------------------------------------------------------------
+paths:
+  # Base directory for the project
+  base: "/usr2/people/macgregor/amplicon/" 
+  # Output directory for the project
+  project: "/usr2/people/macgregor/amplicon/project_01" 
+  # Path to the directory containing your BLAST database
+  blast_db: "/usr2/people/macgregor/blast_db/SILVA_16S_db" 
+  # Path to the VSEARCH database
+  vsearch_db: "/usr2/people/macgregor/blast_db/silva_nr99.udb"
+  # Path to the QIIME2 classifier directory
+  classifier: "/usr2/people/macgregor/amplicon/workflow_16s/resources/classifier/silva-138-99-515-806"
+  # Path to the QIIME2 phylogeny directory
+  phylogeny: "/usr2/people/macgregor/amplicon/workflow_16s/resources/phylogeny/gg-2022-10-ssu-nr99"
+  # Directory containing manually collected metadata
+  manual_metadata: "/usr2/people/macgregor/manual_metadata"
+  # List of datasets
+  dataset_list: "/usr2/people/macgregor/amplicon/workflow_16s/resources/input/example_01/datasets.txt"
+  # Dataset metadata
+  dataset_info: "/usr2/people/macgregor/amplicon/workflow_16s/resources/input/example_01/datasets.tsv"
+  # Path to the primer SQLite database
+  primer_db: "/usr2/people/macgregor/amplicon/workflow_16s/src/data/primer_data.db"
+
+datasets:
+  dataset_list: "/usr2/people/macgregor/amplicon/workflow_16s/resources/input/example_01/datasets.txt"
+  dataset_info: "/usr2/people/macgregor/amplicon/workflow_16s/resources/input/example_01/datasets.tsv"
+
+# -------------------------------------------------------------------
+#  Quality Control & Filtering Thresholds 🎯
+# -------------------------------------------------------------------
+quality_control:
+  # Minimum sequencing depth (counts per sample) for filtering
+  min_sequencing_depth: 5000
+  # Minimum sample prevalence (number of samples a feature must appear in)
+  min_sample_prevalence: 2
+  # Default DPI for saved plots (higher = better quality, larger files)
+  plot_dpi: 150
+
+# -------------------------------------------------------------------
+#  Phylogeny & Tree Construction 🌳
+# -------------------------------------------------------------------
+phylogeny:
+  # Conda environment path or name for phylogenetic tools (MAFFT, FastTree)
+  # Can be absolute path (e.g., "/path/to/conda/envs/qiime2-amplicon-2025.7")
+  # or environment name (e.g., "qiime2-amplicon-2025.7")
+  # If null, will auto-detect from current Python environment
+  conda_env: null 
+
+
+# -------------------------------------------------------------------
+
+#  Execution & Performance Parameters 🚀
+#  Control the computational resources used by the pipeline.
+#  For downstream ingestion, the number of parallel workers/cores is set by:
+#    execution.threads (preferred), cpu.limit, or execution.cpu_limit (fallback order)
+#  If not set, defaults to 8. Max is capped at system CPU count (64).
+# -------------------------------------------------------------------
+verbose: True # Enable verbose logging for debugging
+execution:
+  threads: 8 # Number of parallel workers/cores for downstream ingestion and other multithreaded tasks
+  cpu_limit: 8  # Global CPU limit for all operations
+  max_concurrency: 8 # (For Snakemake) The maximum number of jobs to run in parallel
+cpu:
+  limit: 8  # Global CPU limit for all operations
+
+# -------------------------------------------------------------------
+# WEB SCRAPING SETTINGS
+# -------------------------------------------------------------------
+web:
+  user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+
+# -------------------------------------------------------------------
+# CREDENTIALS
+# -------------------------------------------------------------------
+credentials:
+  email: "macgregor@berkeley.edu"
+  ena_email: "macgregor@berkeley.edu"
+  mindat_api_key: "ee6cec6c0c15e4e2960871477dbfb072" # MinDat API key (optional, for NFC facility matching)
+  airnow_api_key: "3B2E33D0-0102-4A2A-ABE8-08211D3E1D25" # AirNow API key (optional, for NFC facility matching)
+  usgs_api_key: "Gx6sR3yF8kJtnFv6ZsJjW4EYZal15prWmB8f2bNc" # USGS API key (optional, for NFC facility matching)
+  ncbi_api_key: "4c94f710e470be18d4ef4de1debb0d804c09" 
+  nrel_api_key: "th4maNQ0TRcRGF2rankEwQesZ0w2Ifyo3irCGTtB" # NREL API key (optional, for NFC facility matching)
+  openaq_api_key: "fbd5f9bb2330a8b50c531f30b142ccbdd611fd6f0da30fdde3eb5385078a2d2b" # OpenAQ API key (optional, for NFC facility matching)
+  google_earth_engine_project: 'wired-day-365517' # Google Earth Engine project (optional, for NFC facility matching)
+  springer_api_key: "fb250d7df882273aa34875560ce81986" # Springer Nature API key (optional, for publication fetching)
+  #ieee_api_key: "" # IEEE API key (optional, for publication fetching)
+  mendeley_api_key: "weJd5aHPGV6Cv26I" # Mendeley API key (optional, for publication fetching)"
+  #dimensions_api_key: "" # Dimensions API key (optional, for publication fetching)"
+
+# ===================================================================
+# UPSTREAM
+# ===================================================================
+
+upstream: 
+  enabled: False
+
+upload_anndata_to_zenodo:
+  enabled: True
+
+# -------------------------------------------------------------------
+# NFC FACILITIES (Optional) 
+# Configure settings for matching samples to nearby nuclear facilities.
+# -------------------------------------------------------------------
+nfc_facilities:
+  enabled: True
+  use_cache: True # Use cached facility data if available
+  use_local: True # Use local facility data if available
+  databases: ["DNFSB", "MinDat", "GEM", "NFCIS"] # Databases to query for facilities
+  fetch_nearby_samples: True # Fetch samples near matched facilities
+  max_distance_km: 50 # Max distance to fetch nearby samples
+  match_existing_samples: True # Match facilities to existing samples in the metadata
+  distance_threshold_km: 5 # Max distance to consider a match
+  facility_match_column: "facility_match" # Metadata column to store facility match results
+  facility_distance_column: "facility_distance_km" # Metadata column to store facility distance results
+  facility_name_column: "facility_name" # Metadata column to store facility name results
+  facility_type_column: "facility_type" # Metadata column to store facility type results
+  facility_id_column: "facility_id" # Metadata column to store facility ID results
+  facility_lat_column: "facility_latitude" # Metadata column to store facility latitude results
+  facility_lon_column: "facility_longitude" # Metadata column to store facility longitude results
+  maps: True # Generate maps of facilities and sample locations
+  geocoding_sleep_seconds: 1.0 # Minimum seconds to wait between geocoding requests (Nominatim recommends >=1.0)
+
+# -------------------------------------------------------------------
+# SEQUENCE PROCESSING
+# -------------------------------------------------------------------
+sequences:
+  max_file_size_gb: 5.0 # Or your desired limit in GB
+  cleanup_raw_files: true
+  ena: 
+    max_concurrent: 1 # Max concurrent ENA downloads
+  pcr_primers:
+    mode: "manual" # PCR primers are manually provided ("manual") or predicted based on sequence alignment ("auto")
+    n_threads: 8 # Number of threads for primer prediction (if mode is "auto")
+  target_subfragment: "any" # Specify a target 16S rRNA subfragment or "any"
+  quality_control:
+    fastqc:
+      enabled: True # Run FastQC for quality control
+      cleanup: True # Remove FastQC output files after processing
+    seqkit:
+      enabled: True # Run SeqKit for quality control
+      max_workers: 8 # Max concurrent SeqKit tasks
+  validate_16s: 
+    enabled: True # Validate sequences based on sequence alignment
+    n_runs: 100 # Number of random samples to validate
+    concurrent_jobs: 8 # Max concurrent validation jobs
+    n_threads: 8 # Number of threads per validation job
+    run_targets: ["16S", "unknown"] # Targets to validate against ("16S", "18S", "ITS", "unknown")
+    pident: 0.90 # Minimum percent identity for a valid 16S match
+  trim:
+    cutadapt:
+      enabled: False # Trim sequences with CutAdapt before importing to QIIME
+      n_cores: 8 # Number of CPU cores to use for CutAdapt
+      start_trim: 0 # Number of bases to trim from the start of each read
+      end_trim: 0 # Number of bases to trim from the end of each read
+      start_q_cutoff: 30 # Quality score cutoff for trimming from the start of each read
+      end_q_cutoff: 15 # Quality score cutoff for trimming from the end of each read
+      min_seq_length: 150 # Minimum length of reads to retain after trimming
+      
+# -------------------------------------------------------------------
+# METADATA
+# -------------------------------------------------------------------
+metadata:
+  filters:
+    # Filter metadata to include only samples with this amplicon type (set to None to disable)
+    amplicon: True 
+    # Exclude samples labeled as 'host-associated' in the 'env_biome' metadata field
+    no_host: True   
+  columns:
+    # Column name for sample IDs
+    sample_id: "#sampleid" 
+    # Column name for dataset names
+    dataset: "dataset_name" 
+    # List of metadata columns to use for grouping samples
+    groups:
+      #- "nuclear_contamination_status" 
+      - name: "nuclear_contamination_status"
+        type: "bool"
+        values: [True, False]
+  # Mappings for metadata columns
+  mappings: {'env_biome': 'environment_biome', 'env_feature': 'environment_feature', 'env_material': 'environment_material'} 
+  # List of metadata columns to drop
+  columns_to_drop: ['fastq_aspera', 'fastq_bytes', 'fastq_galaxy', 'fastq_md5'] 
+  # List of metadata columns to force as numeric
+  force_numeric_columns: [] 
+  # Mappings for categorical metadata columns
+  categorical_mappings: {} 
+  # Suffixes to collapse in metadata column names
+  suffixes_to_collapse: ['_ena', '_study', '_sample', '_run', '_experiment', '_deg', '.1'] 
+
+# -------------------------------------------------------------------
+#  QIIME2 PROCESSING
+# -------------------------------------------------------------------
+qiime2: # QIIME 
+  hard_rerun: False
+  per_dataset:
+    collapse_level: 6
+    script_path: "/usr2/people/macgregor/amplicon/workflow_16s/src/workflow_16s/api/qiime/seqs_to_features.py"
+    hard_rerun: False
+    trim:
+      # Set to "False" if cutadapt > enabled is "True"
+      enabled: True 
+    denoise:
+      chimera_method: "consensus"
+      denoise_algorithm: "DADA2"
+    taxonomy:
+      classifier_dir: "../resources/classifier/silva-138-99-515-806" 
+      classifier: "silva-138-99-515-806"
+      classify_method: "sklearn"
+      confidence: 0.7
+    filter:
+      retain_threshold: 80
+  meta_analysis:
+    script_path: "../src/workflow_16s/api/qiime/phylogenetic_metaanalysis.py"
+    hard_rerun: False
+
+# Remove intermediate FASTQ files after processing
+clean_fastq: 
+  enabled: True 
+
+# ===================================================================
+# DOWNSTREAM
+# ===================================================================
+
+downstream: 
+  enabled: False
+  find_subsets: False
+
+# The metadata column that defines categorical groups of samples
+group_column: "nuclear_contamination_status" 
+group_column_type: "bool"
+group_column_values: 
+  - True
+  - False 
+
+
+preprocessing:
+  clean_metadata:
+    enabled: True
+    key_cols: ['latitude', 'longitude', 'elevation', 'depth', 'ph', 'temperature', 'precipitation', 'batch_original', 'collection_date', 'host', 'location', 'env_biome', 'env_feature', 'env_material', 'facility_match']
+    cols_to_keep: ['sample_accession', 'study_accession', '#sampleid', 'sample_id', 'batch_original', 'latitude', 'longitude', 'elevation', 'depth', 'ph', 'temperature', 'precipitation', 'collection_date', 'host', 'location', 'env_biome', 'env_feature', 'env_material', 'country', 'lat_facility', 'lon_facility', 'facility_distance_km', 'facility_type', 'facility_match']
+  # Metadata quality thresholds for plotting/analysis
+  metadata_quality:
+    # Minimum fraction of samples that must have non-null values (0.0-1.0)
+    min_fullness: 0.4  # e.g., 0.4 = column must have values for ≥40% of samples
+    # Minimum absolute number of samples that must have non-null values
+    min_samples: 100  # e.g., column must have ≥100 samples with values
+    # Maximum number of unique categories for categorical variables
+    max_categories: 50  # Columns with >50 categories are excluded from categorical analysis
+    # Standardize all date/timestamp columns to ISO format (YYYY-MM-DD)
+    standardize_dates: True
+  rebuild_tree:
+    enabled: False #True
+    # Method: fasttree (fast), iqtree (accurate, publication), raxml-ng (most accurate, slow)
+    method: "fasttree"  # Change to "iqtree" for publication-quality trees
+    threads: 8  # CPU threads for IQ-TREE/RAxML-ng
+  filter:
+    enabled: True
+    min_sequencing_depth: 1000
+    min_sample_prevalence: 2
+    # Filter samples by target gene (e.g., keep only 16S samples, exclude ITS/18S)
+    # Note: Values are automatically normalized to canonical form ('16S', '18S', 'ITS', etc.)
+    target_gene:
+      enabled: True  # Set to False to disable target_gene filtering
+      keep_genes: ['16S']  # List of canonical target genes to keep (synonyms handled automatically)
+      metadata_column: 'target_gene'  # Metadata column name containing target gene information
+    terms_to_exclude:  ['host-associated', 'mouse', 'homo sapien', 'gut', 'mice', 'sputum', 'cress', 'mouse']
+    contaminant_terms: ['chloroplast', 'mitochondria']
+    admin_noise_columns: ['biosample_insdc_center_name', 'biosample_insdc_first_public', 'biosample_investigation_type', 'country_facility', 'dataset', 'EnvironmentalHealth_date', 'latitude_osm', 'longitude_osm', 'refs', 'source_url', 'source_version', 'temporal_coverage', 'time', 'unit', 'variable', 'admin', 'batch', 'sample_id', '#sampleid']
+    #min_depth: 1000
+    #min_prevalence: 0.01
+
+# -------------------------------------------------------------------
+# COMPOSITIONAL DATA ANALYSIS
+# Zero handling and transformations for compositional data
+# -------------------------------------------------------------------
+compositional:
+  enabled: True
+  # Zero handling method: "multiplicative", "geometric_bayesian", "simple_impute"
+  zero_handling: "multiplicative"
+  # Multiplicative replacement parameters (Martin-Fernández 2003)
+  delta_multiplicative: 0.65  # Replacement value for zeros
+  # Transformations to apply
+  transformations:
+    clr: True   # Centered log-ratio
+    ilr: False  # Isometric log-ratio (requires tree)
+    philr: False # Phylogenetic ILR (requires tree)
+  # Diagnostics
+  diagnose_zeros: True
+  plot_diagnostics: True
+
+# -------------------------------------------------------------------
+# BATCH EFFECTS
+# Detection and correction of technical batch effects
+# -------------------------------------------------------------------
+batch_effects:
+  enabled: True
+  # Column name for batch variable
+  batch_column: "batch_original"
+  # Detection methods
+  detection:
+    enabled: True
+    methods: ["permanova", "pca", "silhouette"]
+    plot_pca: True
+    plot_silhouette: True
+  # Correction methods  
+  correction:
+    enabled: True
+    # Method: "conqur" (recommended for microbiome) or "combat"
+    method: "conqur"
+    # ConQuR parameters
+    conqur:
+      batch_ref: null  # Reference batch (null for automatic)
+      logistic_lasso: True  # Use LASSO for logistic regression
+      quantile_type: 7  # Quantile estimation method
+    # ComBat parameters
+    combat:
+      parametric: True
+      mean_only: False
+      ref_batch: null
+
+# -------------------------------------------------------------------
+# DECONTAMINATION
+# Removal of contaminant sequences using negative controls
+# -------------------------------------------------------------------
+decontamination:
+  enabled: False  # Requires negative control samples
+  # Column indicating if sample is negative control
+  neg_control_column: "is_negative_control"
+  # Decontamination method: "frequency", "prevalence", "combined"
+  method: "combined"
+  # Threshold for calling contaminants
+  threshold: 0.1
+  # Frequency method parameters
+  frequency:
+    # Column with DNA concentration
+    concentration_column: "dna_concentration"
+    normalize: True
+  # Prevalence method parameters
+  prevalence:
+    threshold: 0.5
+  # Plot diagnostics
+  plot_diagnostics: True
+  # Remove identified contaminants
+  remove_contaminants: True
+
+# -------------------------------------------------------------------
+# PHYLOGENETIC DIVERSITY
+# Tree-based diversity metrics
+# -------------------------------------------------------------------
+phylogenetic_diversity:
+  enabled: True
+  # Path to phylogenetic tree (null to build from sequences)
+  tree_path: null
+  # Tree building method if tree_path is null: "fasttree", "sepp"
+  tree_method: "fasttree"
+  # Metrics to calculate
+  metrics:
+    faith_pd: True  # Faith's phylogenetic diversity
+    unifrac_unweighted: True  # Unweighted UniFrac
+    unifrac_weighted: True  # Weighted UniFrac
+  # SEPP parameters (for fragment insertion)
+  sepp:
+    reference_database: "greengenes"  # or "silva"
+    threads: 1
+
+# -------------------------------------------------------------------
+# DIFFERENTIAL ABUNDANCE
+# Multi-method differential abundance testing
+# -------------------------------------------------------------------
+differential_abundance:
+  enabled: True
+  # Group comparison column
+  group_column: "nuclear_contamination_status"
+  # Methods to run: "deseq2", "corncob", "linda", "aldex2", "wilcoxon"
+  methods: ["deseq2", "aldex2", "wilcoxon"]
+  # Minimum prevalence for inclusion
+  min_prevalence: 0.1
+  # FDR threshold
+  fdr_threshold: 0.05
+  # Fold change threshold (log2)
+  log_fc_threshold: 1.0
+  # Consensus analysis
+  consensus:
+    enabled: True
+    # Minimum number of methods that must agree
+    min_agreement: 2
+  # DESeq2 parameters
+  deseq2:
+    fit_type: "parametric"
+    test: "Wald"
+  # ALDEx2 parameters
+  aldex2:
+    mc_samples: 128  # Monte Carlo samples
+    denom: "all"  # Denominator: "all", "iqlr", "zero"
+  # Corncob parameters
+  corncob:
+    formula: "~ nuclear_contamination_status"
+    phi_formula: "~ 1"
+
+# -------------------------------------------------------------------
+# COMPOSITIONAL NETWORKS
+# Co-occurrence network inference for compositional data
+# -------------------------------------------------------------------
+compositional_networks:
+  enabled: False
+  # Methods: "spiec_easi", "sparcc", "proportionality"
+  methods: ["sparcc"]
+  # Minimum abundance for inclusion
+  min_abundance: 0.001
+  # Minimum prevalence for inclusion  
+  min_prevalence: 0.1
+  # SPIEC-EASI parameters
+  spiec_easi:
+    method: "glasso"  # or "mb"
+    nlambda: 20
+    lambda_min_ratio: 0.01
+    pulsar_rep: 50
+  # SparCC parameters
+  sparcc:
+    iterations: 20
+    excluded_iterations: 10
+    threshold: 0.1  # Correlation threshold
+  # Proportionality parameters
+  proportionality:
+    metric: "rho"  # or "phi"
+    p_adjustment: "fdr"
+  # Network comparison
+  compare_methods: True
+  # Plot networks
+  plot_networks: True
+
+# -------------------------------------------------------------------
+# LONGITUDINAL ANALYSIS
+# Time-series microbiome analysis
+# -------------------------------------------------------------------
+longitudinal:
+  enabled: False  # Enable for time-series data
+  # Column with time information (datetime or numeric)
+  time_column: "collection_date"
+  # Column with subject/location ID for repeated measures
+  subject_column: "location"
+  # Distance metric for temporal stability
+  stability_metric: "bray_curtis"  # bray_curtis, euclidean, cosine
+  # Trajectory clustering
+  trajectory_clustering:
+    enabled: False
+    n_clusters: 4  # Number of temporal trajectory clusters
+  # Minimum timepoints per subject
+  min_timepoints: 3
+  # Differential abundance method for longitudinal data
+  da_method: "maaslin2"  # maaslin2, zibr, metalonda
+  # MaAsLin2 parameters
+  maaslin2:
+    random_effects: ["subject_id"]
+    fixed_effects: ["time", "group"]
+
+# -------------------------------------------------------------------
+# RAREFACTION CURVES
+# Sampling adequacy diagnostics
+# -------------------------------------------------------------------
+rarefaction:
+  enabled: True  # Recommended for all analyses
+  # Alpha diversity metric for rarefaction
+  metric: "observed_features"  # observed_features, shannon, chao1
+  # Number of sequencing depth points to evaluate
+  n_depths: 20
+  # Subsampling iterations per depth point
+  n_iterations: 10
+  # Saturation threshold (0-1, 0.95 = 95% of asymptote)
+  saturation_threshold: 0.95
+  # Warn if saturation below threshold
+  warn_undersampled: True
+
+# -------------------------------------------------------------------
+# POWER ANALYSIS
+# Pre-flight statistical power assessment
+# -------------------------------------------------------------------
+power_analysis:
+  enabled: True  # Recommended before expensive analyses
+  # Distance metric for PERMANOVA power
+  distance_metric: "braycurtis"
+  # Target statistical power
+  target_power: 0.8
+  # Significance threshold
+  alpha: 0.05
+  # Expected effect size (R² for PERMANOVA)
+  expected_effect_size: 0.1  # 10% variance explained
+  # Sample sizes to test (if doing prospective power calculation)
+  sample_sizes: [10, 20, 30, 40, 50, 75, 100]
+
+# -------------------------------------------------------------------
+# LONGITUDINAL ANALYSIS
+# Time-series and repeated measures analysis
+# -------------------------------------------------------------------
+
+# -------------------------------------------------------------------
+# POWER ANALYSIS
+# Sample size and power estimation
+# -------------------------------------------------------------------
+# -------------------------------------------------------------------
+# Metadata Dashboard
+# -------------------------------------------------------------------
+dashboard:
+  enabled: False
+
+# -------------------------------------------------------------------
+# Sample Maps
+# -------------------------------------------------------------------
+maps:
+  enabled: False
+  color_columns: ["dataset_name", "nuclear_contamination_status", 
+                  "env_feature", "env_material", "country", 
+                  "facility_match"]
+
+# -------------------------------------------------------------------
+# 02. Feature Table Preprocessing
+# Toggle which processing steps will be performed on the merged 
+# feature table prior to analysis.
+# -------------------------------------------------------------------
+features: 
+  load_existing: False
+  filter: True
+  normalize: True
+  clr_transform: True
+  presence_absence: True
+
+# -------------------------------------------------------------------
+# 03. Alpha Diversity
+# -------------------------------------------------------------------
+alpha_diversity: 
+  enabled: True
+  plots: 
+    enabled: True
+    add_points: True
+    add_stat_annot: True
+    effect_size_threshold: 0.5
+  # Statistical test type
+  parametric: False                  
+  correlation_analysis: 
+    enabled: False
+    # Max unique values for categorical variables
+    max_categories: 20  
+    # Min samples per group for valid comparison             
+    min_group_size: 5           
+    # Number of top associations to show     
+    top_n_correlations: 20           
+  tables: 
+    raw:  
+      enabled: True
+      levels: ["genus", "family", "class"]
+    normalized:
+      enabled: True
+      levels: ["genus", "family"]
+  # Disabled: "ace", "chao1", "dominance", "gini_index", "goods_coverage"
+  metrics: ["shannon", "observed_features", "simpson", "pielou_evenness", "heip_evenness"] 
+    
+# -------------------------------------------------------------------
+# Statistical Analyses
+# -------------------------------------------------------------------
+stats: 
+  enabled: True
+  load_existing: False #True
+  max_workers: 8
+  advanced_analysis:
+    enabled: True
+    core_microbiome_analysis:
+      enabled: True
+      prevalence_threshold: 0.8
+      abundance_threshold: 0.01
+    batch_correlation:
+      enabled: True
+    network_analysis:
+      enabled: True
+  tables:
+    raw:
+      enabled: True
+      tests: ["mwu_bonferroni", "kruskal_bonferroni"]
+    presence_absence:
+      enabled: True
+      tests: ["fisher"]                
+    filtered:
+      enabled: True
+      tests: ["mwu_bonferroni", "kruskal_bonferroni"]
+    normalized:
+      enabled: True
+      tests: ["ttest", "mwu_bonferroni", "kruskal_bonferroni"]
+    clr_transformed:
+      enabled: True
+      tests: ["ttest", "mwu_bonferroni", "kruskal_bonferroni"]
+
+# -------------------------------------------------------------------
+# Beta Diversity (Ordination)
+# -------------------------------------------------------------------
+beta_diversity: 
+  enabled: True
+  load_existing: False # BROKEN
+  # Max concurrent ordination tasks
+  max_workers: 8       
+  # CPU cores per ordination method
+  cpu_limit: 8        
+  tables:
+    raw:
+      enabled: True
+      pcoa_metric: "braycurtis"
+      methods: ["pcoa"]
+      levels: ["genus"]
+    filtered:
+      enabled: True
+      pcoa_metric: "braycurtis"
+      methods: ["pcoa", "tsne", "umap"]
+      levels: ["genus", "phylum"]
+    normalized:
+      enabled: True
+      pcoa_metric: "braycurtis"
+      methods: ["pca", "pcoa", "tsne", "umap"]
+      levels: ["phylum"]
+    clr_transformed:
+      enabled: True
+      pcoa_metric: "euclidean"
+      methods: ["pca", "pcoa", "tsne", "umap"]
+      levels: ["genus", "phylum"]
+    presence_absence:
+      enabled: True
+      pcoa_metric: "jaccard"
+      methods: ["pcoa", "tsne", "umap"]
+      levels: ["genus", "phylum"]
+
+# -------------------------------------------------------------------
+# Machine Learning Feature Selection with CatBoost
+# -------------------------------------------------------------------
+ml: 
+  enabled: True
+  load_existing: False
+  n_threads: 8
+  num_features: 500
+  step_size: 100
+  permutation_importance: 
+    enabled: True
+  plots:
+    enabled: True
+  tables:
+    raw:
+      enabled: True
+      levels: ["genus"]
+      methods: ["rfe"]
+    filtered:
+      enabled: True
+      levels: ["genus"]
+      methods: ["rfe", "select_k_best"]
+    normalized:
+      enabled: True
+      levels: ["genus"]
+      methods: ["rfe", "select_k_best", "chi_squared", "lasso", "shap"]
+    clr_transformed:
+      enabled: True
+      levels: ["family"]
+      methods: ["rfe"]
+    presence_absence:
+      enabled: True
+      levels: ["family"]
+      methods: ["rfe"]
+
+# -------------------------------------------------------------------
+# Machine Learning - Batch Covariate Control
+# Handles technical/experimental batch effects in ML predictions
+# -------------------------------------------------------------------
+machine_learning:
+  # Run both approaches in the same execution for comparison
+  batch_covariates:
+    enabled: True
+    
+    # Batch/technical variables to use as covariates
+    # These are experimental/administrative factors that may confound biological signals
+    covariate_columns:
+      - 'batch_original'              # Original batch identifier
+      - 'sequencing_center'           # Sequencing facility (technical variation)
+      - 'instrument_platform'         # Sequencing platform (Illumina MiSeq/HiSeq/NovaSeq, etc.)
+      - 'instrument_model'            # Specific sequencer model
+      - 'library_layout'              # PAIRED vs SINGLE end sequencing
+      - 'pcr_primer_fwd'              # Forward PCR primer name (e.g., 515F)
+      - 'pcr_primer_rev'              # Reverse PCR primer name (e.g., 806R)
+      - 'target_subfragment'          # Target region (e.g., V4, V3-V4)
+      - 'dna_extraction_method'       # DNA extraction kit/protocol
+      - 'study_accession'             # Study/project identifier (dataset batch effect)
+      - 'dataset_id'                  # Internal dataset identifier
+    
+    # Option A: Covariate Adjustment (Recommended)
+    # Include batch variables directly in model training alongside microbial features
+    # Benefits: Models learn which taxa matter AFTER controlling for technical variation
+    # Caveats: Can't separate effects if batch perfectly confounds biology
+    covariate_adjustment:
+      enabled: True
+      # Suffix for output files to distinguish from baseline models
+      output_suffix: '_batch_adjusted'
+      # One-hot encode categorical batch variables (True) or use label encoding (False)
+      one_hot_encode: True
+      # Maximum number of categories per batch variable (drop if exceeded to prevent overfitting)
+      max_categories: 20
+      # Scale batch covariates to match feature scale (recommended for tree-based models: False)
+      scale_covariates: False
+    
+    # Option B: Stratified Prediction (Two-Stage Residual Analysis)
+    # First predict batch effects, then predict biology from residuals
+    # Benefits: Explicitly removes batch signal before biological prediction
+    # Caveats: May remove true biological variation if it correlates with batch
+    stratified_prediction:
+      enabled: True
+      # Suffix for output files
+      output_suffix: '_batch_residual'
+      # Use same train/test split for both stages (True) or separate splits (False)
+      consistent_split: True
+      # Save intermediate batch prediction results
+      save_batch_models: True
+    
+    # Confounding Detection
+    # Warn when batch variables are highly correlated with biological targets
+    confounding_detection:
+      enabled: True
+      # Correlation threshold for confounding warning (0-1)
+      # Higher = stricter (only warn for very high correlation)
+      correlation_threshold: 0.7
+      # Methods: 'cramer_v' (categorical-categorical), 'eta_squared' (categorical-numeric),
+      #          'pearson' (numeric-numeric), 'spearman' (rank correlation)
+      methods: ['cramer_v', 'eta_squared', 'spearman']
+      # Generate confounding report plots (batch vs target distributions)
+      plot_confounding: True
+    
+    # Comparison Reports
+    # Compare baseline (no batch control) vs adjusted vs stratified results
+    comparison:
+      enabled: True
+      # Metrics to compare: 'accuracy', 'r2', 'oob_score', 'feature_importance'
+      compare_metrics: ['accuracy', 'r2', 'oob_score', 'feature_importance_overlap']
+      # Generate side-by-side comparison plots
+      plot_comparison: True
+      # Generate markdown summary report with benefits/caveats
+      generate_summary: True
+  
+# -------------------------------------------------------------------
+# Functional Prediction
+# -------------------------------------------------------------------
+faprotax: 
+  enabled: True
+
+functional:
+  faprotax:
+    enabled: True
+  picrust2:
+    enabled: False #True
+
+# -------------------------------------------------------------------
+# Top Features
+# -------------------------------------------------------------------
+top_features:
+  enabled: True
+  # Number of top features
+  n: 30                 
+  stats:
+    enabled: True
+  models:
+    enabled: True
+  # Violin plots of top important features
+  violin_plots:         
+    enabled: True
+    # Number of features to plot per category
+    n: 30      
+  # Feature maps of top important features         
+  feature_maps:         
+    enabled: True
+    n: 30 
+    
+feature_maps:
+  enabled: True
+  n: 30
+
+# ===================================================================
+# NEW SCIENTIFIC ENHANCEMENTS (January 2026)
+# ===================================================================
+
+# -------------------------------------------------------------------
+# COMPREHENSIVE QUALITY CONTROL (QC)
+# State-of-the-art data validation and quality assurance
+# -------------------------------------------------------------------
+
+# -------------------------------------------------------------------
+# Compositional Data Analysis
+# -------------------------------------------------------------------
+
+# -------------------------------------------------------------------
+# Batch Effect Analysis
+# -------------------------------------------------------------------
+
+# -------------------------------------------------------------------
+# Contamination Detection & Removal
+# -------------------------------------------------------------------
+
+# -------------------------------------------------------------------
+# Phylogenetic Diversity Metrics
+# -------------------------------------------------------------------
+
+# -------------------------------------------------------------------
+# Differential Abundance Analysis (Extended)
+# -------------------------------------------------------------------
+
+# -------------------------------------------------------------------
+# Compositional Network Analysis
+# -------------------------------------------------------------------
+networks:
+  enabled: true  # Set to true to infer microbial co-occurrence networks
+  # Method: 'spiec-easi', 'sparcc', or 'proportionality'
+  method: 'spiec-easi'
+  # Minimum feature prevalence
+  min_prevalence: 0.1
+  # Method-specific parameters
+  spiec_easi:
+    method: 'mb'  # 'mb' (Meinshausen-Bühlmann) or 'glasso' (graphical lasso)
+    nlambda: 20
+    lambda_min_ratio: 0.01
+    pulsar_rep: 20  # StARS stability selection reps
+    ncores: 8
+  sparcc:
+    iterations: 20
+    exclude_iterations: 10
+    threshold: 0.1  # Correlation threshold
+    bootstraps: 100  # For p-value calculation
+  methods_to_compare: ['spiec-easi', 'sparcc']
+  # Visualization
+  plots:
+    network_graph: true
+    interactive: true
+  # Output directory
+  output_dir: '04_analysis/networks'
+
+# -------------------------------------------------------------------
+# Longitudinal Analysis (Optional)
+# -------------------------------------------------------------------
+
+# -------------------------------------------------------------------
+# Power Analysis (Pre-Flight Checks)
+# -------------------------------------------------------------------
+
+# -------------------------------------------------------------------
+# Rarefaction Curve Analysis
+# -------------------------------------------------------------------

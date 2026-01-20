@@ -1,0 +1,4 @@
+target_subfragment: V3-V4
+pcr_primer_fwd_seq: CCTACGGGNGGCWGCAG
+pcr_primer_rev_seq: GACTACHVGGGTATCTAATCC
+dataset_id: PRJEB47175

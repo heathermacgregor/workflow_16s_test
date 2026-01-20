@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>16S Analysis Report</title>
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Plotly.js -->
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    
+    <style>
+        .section {
+            margin-bottom: 3rem;
+            padding: 2rem;
+            background-color: #f8f9fa;
+            border-radius: 0.5rem;
+        }
+        
+        .section-title {
+            border-bottom: 2px solid #0d6efd;
+            padding-bottom: 0.5rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        .plot-container {
+            border: 1px solid #dee2e6;
+            border-radius: 0.25rem;
+            padding: 1rem;
+            background-color: white;
+            margin-bottom: 1rem;
+            min-height: 400px;
+        }
+        
+        .nav-tabs .nav-link.active {
+            font-weight: bold;
+            border-bottom: 3px solid #0d6efd;
+        }
+        
+        .tab-pane {
+            padding: 1.5rem 0;
+        }
+        
+        .dropdown-row {
+            background-color: #e9ecef;
+            padding: 1rem;
+            border-radius: 0.25rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        .dimension-selector {
+            margin-bottom: 1rem;
+        }
+        
+        /* Make plots responsive */
+        .js-plotly-plot, .plotly {
+            width: 100% !important;
+            height: 100% !important;
+        }
+        
+        .alert-danger small {
+            font-size: 0.8em;
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <div class="container py-5">
+        <header class="text-center mb-5">
+            <h1 class="display-4">16S rRNA Analysis Report</h1>
+            <p class="lead">Comprehensive analysis of microbiome data</p>
+            <hr class="my-4">
+        </header>
+
+        <!-- Table of Contents -->
+        <div class="card mb-5">
+            <div class="card-header bg-primary text-white">
+                <h2 class="h5 mb-0">Report Sections</h2>
+            </div>
+            <div class="card-body">
+                <ul class="list-group">
+                    {% if report_data.has_maps %}
+                    <li class="list-group-item">
+                        <a href="#sample-maps" class="text-decoration-none">Sample Maps</a>
+                    </li>
+                    {% endif %}
+                    
+                    {% if report_data.has_alpha %}
+                    <li class="list-group-item">
+                        <a href="#alpha-diversity" class="text-decoration-none">Alpha Diversity</a>
+                    </li>
+                    {% endif %}
+                    
+                    {% if report_data.has_stats %}
+                    <li class="list-group-item">
+                        <a href="#statistical-tests" class="text-decoration-none">Statistical Tests</a>
+                    </li>
+                    {% endif %}
+                    
+                    {% if report_data.has_top_features %}
+                    <li class="list-group-item">
+                        <a href="#top-features" class="text-decoration-none">Top Features</a>
+                    </li>
+                    {% endif %}
+                    
+                    {% if report_data.has_ordination %}
+                    <li class="list-group-item">
+                        <a href="#ordination" class="text-decoration-none">Ordination Plots</a>
+                    </li>
+                    {% endif %}
+                    
+                    {% if report_data.has_ml %}
+                    <li class="list-group-item">
+                        <a href="#machine-learning" class="text-decoration-none">Machine Learning</a>
+                    </li>
+                    {% endif %}
+                </ul>
+            </div>
+        </div>
+
+        <!-- Main Content Sections -->
+        {% for section in report_data.sections %}
+        <section id="{{ section.id }}" class="section">
+            <div class="section-title">
+                <h2>{{ section.title }}</h2>
+                <p class="text-muted">{{ section.description }}</p>
+            </div>
+            
+            {% if 'dropdowns' in section %}
+            <!-- Dimension selectors -->
+            <div class="dropdown-row row">
+                {% for dropdown in section.dropdowns %}
+                <div class="col-md-3 dimension-selector">
+                    <label for="{{ dropdown.id }}" class="form-label">{{ dropdown.label }}</label>
+                    <select class="form-select" id="{{ dropdown.id }}" data-section="{{ section.id }}">
+                        {% for option in dropdown.options %}
+                        <option value="{{ option }}" 
+                                {% if option == dropdown.default %}selected{% endif %}>
+                            {{ option }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                {% endfor %}
+            </div>
+            
+            <!-- Plot container -->
+            <div class="plot-container" id="{{ section.id }}-plot">
+                <!-- Plot will be inserted here dynamically -->
+            </div>
+            {% endif %}
+            
+            {% if 'content' in section %}
+            <!-- Static content section -->
+            <div class="content">
+                {{ section.content|safe }}
+            </div>
+            {% endif %}
+            
+            {% if 'tabs' in section %}
+            <!-- Tabbed interface -->
+            <ul class="nav nav-tabs" id="{{ section.id }}-tabs" role="tablist">
+                {% for tab in section.tabs %}
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link {% if loop.first %}active{% endif %}" 
+                            id="{{ tab.type }}-tab" 
+                            data-bs-toggle="tab" 
+                            data-bs-target="#{{ tab.type }}" 
+                            type="button" role="tab">
+                        {{ tab.name }}
+                    </button>
+                </li>
+                {% endfor %}
+            </ul>
+            
+            <div class="tab-content" id="{{ section.id }}-content">
+                {% for tab in section.tabs %}
+                <div class="tab-pane fade {% if loop.first %}show active{% endif %}" 
+                     id="{{ tab.type }}" role="tabpanel">
+                    <h4>Feature Table</h4>
+                    <div class="table-responsive mb-4">
+                        {{ tab.table|safe }}
+                    </div>
+                    
+                    {% if tab.violin_plots %}
+                    <h4>Violin Plots</h4>
+                    <div class="row">
+                        <div class="col-md-8">
+                            <label for="violin-selector-{{ tab.type }}" class="form-label">Select feature:</label>
+                            <select class="form-select mb-3" id="violin-selector-{{ tab.type }}">
+                                {% for plot in tab.violin_plots %}
+                                <option value="{{ plot.feature }}">{{ plot.feature }} ({{ plot.level }})</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="plot-container" id="violin-{{ tab.type }}-plot">
+                        <!-- Violin plot will be inserted here dynamically -->
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </section>
+        {% endfor %}
+        
+        <footer class="mt-5 py-4 text-center text-muted">
+            <p>Generated on {{ current_date }} | 16S Analysis Pipeline</p>
+        </footer>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+        // Store all figures data
+        const figureData = {
+            {% for section in report_data.sections %}
+            {% if 'figures' in section %}
+            "{{ section.id }}": {
+                figures: [
+                    {% for fig in section.figures %}
+                    {
+                        {% for key, value in fig.items() %}
+                        {% if key == 'figure' %}
+                        "{{ key }}": {{ value }},
+                        {% else %}
+                        "{{ key }}": "{{ value }}",
+                        {% endif %}
+                        {% endfor %}
+                    },
+                    {% endfor %}
+                ],
+                dropdowns: [
+                    {% for dropdown in section.dropdowns %}
+                    "{{ dropdown.id }}",
+                    {% endfor %}
+                ]
+            },
+            {% endif %}
+            {% endfor %}
+        };
+
+        // Store violin figures separately
+        const violinFigures = {
+            {% for section in report_data.sections %}
+            {% if 'tabs' in section %}
+            {% for tab in section.tabs %}
+            "{{ tab.type }}": {
+                {% for plot in tab.violin_plots %}
+                "{{ plot.feature }}": {{ plot.figure }},
+                {% endfor %}
+            },
+            {% endfor %}
+            {% endif %}
+            {% endfor %}
+        };
+
+        // Function to render Plotly figure
+        function renderPlotly(containerId, figureJson) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = '';  // Clear previous content
+            
+            try {
+                // Parse the JSON string
+                const figure = JSON.parse(figureJson);
+                Plotly.newPlot(container, figure.data, figure.layout, figure.config || {});
+                
+                // Make plot responsive
+                window.addEventListener('resize', function() {
+                    Plotly.Plots.resize(container);
+                });
+            } catch (error) {
+                container.innerHTML = `
+                    <div class="alert alert-danger">
+                        <strong>Error rendering plot:</strong> ${error.message}
+                        <br><small>Data: ${figureJson.substring(0, 100)}...</small>
+                    </div>
+                `;
+                console.error('Plot rendering error:', error);
+                console.log('Figure JSON:', figureJson);
+            }
+        }
+
+        // Function to find matching figure
+        function findMatchingFigure(sectionId, selections) {
+            const sectionData = figureData[sectionId];
+            if (!sectionData) return null;
+            
+            for (const fig of sectionData.figures) {
+                let match = true;
+                for (const dropdownId of sectionData.dropdowns) {
+                    const key = dropdownId.split('-').slice(1).join('_');
+                    if (fig[key] !== selections[dropdownId]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) return fig;
+            }
+            return null;
+        }
+
+        // Function to update plot based on selections
+        function updatePlot(sectionId) {
+            const sectionData = figureData[sectionId];
+            if (!sectionData) return;
+            
+            // Get current selections
+            const selections = {};
+            for (const dropdownId of sectionData.dropdowns) {
+                const select = document.getElementById(dropdownId);
+                if (select) {
+                    selections[dropdownId] = select.value;
+                }
+            }
+            
+            // Find matching figure
+            const plotContainer = document.getElementById(`${sectionId}-plot`);
+            const matchingFig = findMatchingFigure(sectionId, selections);
+            
+            if (matchingFig && matchingFig.figure) {
+                renderPlotly(`${sectionId}-plot`, matchingFig.figure);
+            } else {
+                plotContainer.innerHTML = '<p>No visualization available for the selected options</p>';
+            }
+        }
+
+        // Function to setup dropdown listeners for a section
+        function setupSectionDropdowns(sectionId) {
+            const sectionData = figureData[sectionId];
+            if (!sectionData) return;
+            
+            for (const dropdownId of sectionData.dropdowns) {
+                const select = document.getElementById(dropdownId);
+                if (select) {
+                    select.addEventListener('change', () => updatePlot(sectionId));
+                }
+            }
+            
+            // Initialize the plot
+            updatePlot(sectionId);
+        }
+
+        // Function to setup violin plot selectors
+        function setupViolinSelectors() {
+            document.querySelectorAll('[id^="violin-selector-"]').forEach(selector => {
+                selector.addEventListener('change', function() {
+                    const tabType = this.id.replace('violin-selector-', '');
+                    const selectedFeature = this.value;
+                    const plotContainer = document.getElementById(`violin-${tabType}-plot`);
+                    
+                    if (plotContainer) {
+                        const figures = violinFigures[tabType];
+                        if (figures && figures[selectedFeature]) {
+                            renderPlotly(`violin-${tabType}-plot`, figures[selectedFeature]);
+                        }
+                    }
+                });
+            });
+        }
+
+        // Initialize when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            // Setup dropdown sections
+            {% for section in report_data.sections %}
+            {% if 'dropdowns' in section %}
+            setupSectionDropdowns("{{ section.id }}");
+            {% endif %}
+            {% endfor %}
+            
+            // Setup violin selectors
+            setupViolinSelectors();
+            
+            // Initialize violin plots with first option
+            document.querySelectorAll('[id^="violin-"]').forEach(container => {
+                if (container.innerHTML.trim() === '') {
+                    const tabType = container.id.replace('violin-', '').replace('-plot', '');
+                    const figures = violinFigures[tabType];
+                    if (figures) {
+                        // Get the first feature name
+                        const firstFeature = Object.keys(figures)[0];
+                        if (firstFeature) {
+                            renderPlotly(container.id, figures[firstFeature]);
+                        }
+                    }
+                }
+            });
+            
+            // Handle window resize for responsive plots
+            window.addEventListener('resize', function() {
+                document.querySelectorAll('.js-plotly-plot').forEach(plotElement => {
+                    Plotly.Plots.resize(plotElement);
+                });
+            });
+        });
+    </script>
+</body>
+</html>

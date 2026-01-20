@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>{title}</title>
+        {plotly_js_tag}
+        <style>
+            {css_content}
+        </style>
+    </head>
+    <body>
+        <h1>{title}</h1>
+        <p>Generated: {generated_ts}</p>
+        <p>Sections: {section_list}</p>
+        <!-- Navigation Section -->
+        {nav_html}
+        <div class="section-controls">
+            <button class="section-button" onclick="toggleAllSections(true)">Expand All</button>
+            <button class="section-button" onclick="toggleAllSections(false)">Collapse All</button>
+        </div>
+        <!-- Analysis Summary Section -->
+        <div class="section" id="analysis-summary">
+            <h2>Analysis Summary</h2>
+            {tables_html}
+        </div>
+        <!-- Figures Sections -->
+        {sections_html}
+        <!-- serialised figure data -->
+        <script id="plot-data" type="application/json">{plot_data_json}</script>
+        <script>
+            {table_js}
+        </script>
+    </body>
+</html>

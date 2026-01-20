@@ -1,0 +1,16 @@
+base_dir/
+├──project_id/
+│   ├── 01_raw_data/
+│   │   └── subset_id/
+│   │       ├── raw_seqs/
+│   │       ├── trimmed_seqs/
+│   │       └── sample-metadata.tsv
+│   ├── 02_qiime
+│   │   └── subset_id/
+│   ├── 03_processed_data/
+│   ├── 04_analysis/
+│   ├── 05_reports/
+│   ├── 06_figures/
+│   ├── 07_logs/
+│   ├── 08_tmp/
+│   └── .cache/
