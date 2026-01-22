@@ -1,25 +1,35 @@
-# ==================================================================================== #
-# statistics/differential_abundance.py
-# Compositional Differential Abundance Testing
-# ==================================================================================== #
+"""
+Unified Differential Abundance Module.
 
+Combines R-based compositional methods (DESeq2, ANCOM-BC, ALDEx2, LinDA, corncob)
+with Python-based non-parametric tests (Wilcoxon/Mann-Whitney) into a single
+interface.
+
+Includes consensus voting to identify robust biomarkers across multiple methods.
+"""
+
+import logging
+import json
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Dict, List, Optional, Set, Tuple, Union
+
+import anndata as ad
 import numpy as np
 import pandas as pd
-import anndata as ad
 from scipy import stats
 from scipy.sparse import issparse
+from statsmodels.stats.multitest import multipletests
+
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from workflow_16s.utils.logger import get_logger
-from workflow_16s.downstream.statistics.multiple_testing import apply_multiple_testing_correction
 
 # Import effect size calculations
 try:
     from workflow_16s.downstream.statistics.effect_sizes import (
-        cohens_d,
-        cliffs_delta,
-        interpret_effect_size
+        cliffs_delta, interpret_cliffs_delta
     )
     EFFECT_SIZES_AVAILABLE = True
 except ImportError:
@@ -28,390 +38,387 @@ except ImportError:
 logger = get_logger("workflow_16s")
 
 # ==================================================================================== #
+#                                   R INTEGRATION
+# ==================================================================================== #
 
-def ancom_bc_wrapper(
+try:
+    import rpy2.robjects as ro
+    from rpy2.robjects import pandas2ri, conversion
+    from rpy2.robjects.packages import importr
+    R_AVAILABLE = True
+except ImportError:
+    R_AVAILABLE = False
+    logger.warning("rpy2 not available. R-based DA methods (DESeq2, ANCOM-BC, etc.) will not work.")
+
+def _check_r_package(package_name: str) -> bool:
+    """Check if an R package is installed."""
+    if not R_AVAILABLE: return False
+    try:
+        importr(package_name)
+        return True
+    except Exception:
+        return False
+
+# ==================================================================================== #
+#                                   PYTHON METHODS
+# ==================================================================================== #
+
+def run_wilcoxon(
     adata: ad.AnnData,
     group_col: str,
-    formula: Optional[str] = None,
-    output_dir: Optional[Path] = None,
-    p_adj_method: str = 'fdr_bh',
-    alpha: float = 0.05,
-    struc_zero: bool = True,
-    neg_lb: bool = True
-) -> Optional[pd.DataFrame]:
-    """
-    Wrapper for ANCOM-BC (Analysis of Compositions of Microbiomes with Bias Correction).
-    
-    ANCOM-BC is a compositionally aware differential abundance method that:
-    1. Corrects for sampling fraction bias
-    2. Accounts for library size variation
-    3. Controls FDR while maintaining power
-    
-    NOTE: This is a Python wrapper that requires R with ANCOMBC package installed.
-    Install in R: install.packages("BiocManager"); BiocManager::install("ANCOMBC")
-    
-    Parameters
-    ----------
-    adata : ad.AnnData
-        AnnData object with count data in .X or layers['raw_counts']
-    group_col : str
-        Metadata column for group comparison
-    formula : Optional[str], optional
-        Model formula (e.g., "~group + batch"), by default None (uses ~group_col)
-    output_dir : Optional[Path], optional
-        Directory to save results, by default None
-    p_adj_method : str, optional
-        FDR correction method, by default 'fdr_bh'
-    alpha : float, optional
-        Significance threshold, by default 0.05
-    struc_zero : bool, optional
-        Whether to detect structural zeros, by default True
-    neg_lb : bool, optional
-        Whether to use negative lower bound for bias correction, by default True
-        
-    Returns
-    -------
-    Optional[pd.DataFrame]
-        Results table with differential abundance statistics
-        
-    Notes
-    -----
-    - Requires rpy2 and R with ANCOMBC package
-    - More robust than simple t-tests or Mann-Whitney for compositional data
-    - Handles batch effects and confounders when specified in formula
-    
-    References
-    ----------
-    Lin, H., & Peddada, S. D. (2020). Analysis of compositions of microbiomes 
-    with bias correction. Nature Communications, 11(1), 3514.
-    """
-    logger.info("=== ANCOM-BC Differential Abundance ===")
-    logger.info(f"Group column: {group_col}")
-    
-    # Check for rpy2
-    try:
-        from rpy2.robjects import pandas2ri, r
-        from rpy2.robjects.packages import importr
-        from rpy2.robjects.conversion import localconverter
-    except ImportError:
-        logger.error(
-            "rpy2 not installed. Install with: pip install rpy2\n"
-            "Also ensure R is installed with ANCOMBC package."
-        )
-        return None
-    
-    # Check if group column exists
-    if group_col not in adata.obs.columns:
-        logger.error(f"Group column '{group_col}' not found in adata.obs")
-        return None
-    
-    # Prepare count matrix
-    if 'raw_counts' in adata.layers:
-        counts = adata.layers['raw_counts']
-    else:
-        counts = adata.X
-    
-    if issparse(counts):
-        counts = counts.toarray()
-    
-    # Create count DataFrame
-    count_df = pd.DataFrame(
-        counts.T,  # ANCOM expects features × samples
-        index=adata.var_names,
-        columns=adata.obs_names
-    )
-    
-    # Create metadata DataFrame
-    metadata = adata.obs[[group_col]].copy()
-    metadata.index.name = 'sample_id'
-    
-    # Default formula
-    if formula is None:
-        formula = f"~{group_col}"
-    
-    logger.info(f"Formula: {formula}")
-    logger.info(f"Count matrix: {count_df.shape[0]} features × {count_df.shape[1]} samples")
-    
-    try:
-        # Activate pandas conversion
-        pandas2ri.activate()
-        
-        # Import R packages
-        base = importr('base')
-        phyloseq = importr('phyloseq')
-        ancombc_pkg = importr('ANCOMBC')
-        
-        # Convert to R objects
-        with localconverter(pandas2ri.converter):
-            r_counts = pandas2ri.py2rpy(count_df)
-            r_metadata = pandas2ri.py2rpy(metadata)
-        
-        # Create phyloseq object
-        logger.info("Creating phyloseq object...")
-        r_script = f"""
-        library(phyloseq)
-        library(ANCOMBC)
-        
-        # Create phyloseq object
-        otu_mat <- as.matrix(counts_df)
-        sample_df <- sample_data(metadata_df)
-        
-        ps <- phyloseq(otu_table(otu_mat, taxa_are_rows = TRUE),
-                       sample_df)
-        
-        # Run ANCOM-BC
-        ancombc_result <- ancombc(
-            phyloseq = ps,
-            formula = "{formula}",
-            p_adj_method = "{p_adj_method}",
-            alpha = {alpha},
-            struc_zero = {str(struc_zero).upper()},
-            neg_lb = {str(neg_lb).upper()},
-            global = TRUE
-        )
-        
-        ancombc_result
-        """
-        
-        # Execute R script
-        r.assign('counts_df', r_counts)
-        r.assign('metadata_df', r_metadata)
-        
-        logger.info("Running ANCOM-BC (this may take a few minutes)...")
-        ancombc_result = r(r_script)
-        
-        # Extract results
-        res = ancombc_result.rx2('res')
-        
-        # Convert to pandas
-        with localconverter(pandas2ri.converter):
-            lfc = pandas2ri.rpy2py(res.rx2('lfc'))  # Log fold changes
-            se = pandas2ri.rpy2py(res.rx2('se'))    # Standard errors
-            W = pandas2ri.rpy2py(res.rx2('W'))      # Test statistics
-            p_val = pandas2ri.rpy2py(res.rx2('p_val'))  # P-values
-            q_val = pandas2ri.rpy2py(res.rx2('q_val'))  # Adjusted p-values
-            diff_abn = pandas2ri.rpy2py(res.rx2('diff_abn'))  # Significance flags
-        
-        # Combine into results DataFrame
-        results_list = []
-        
-        for i, feature in enumerate(count_df.index):
-            feature_result = {
-                'feature': feature,
-                'log_fold_change': lfc.iloc[i, 0] if lfc.shape[1] > 0 else np.nan,
-                'standard_error': se.iloc[i, 0] if se.shape[1] > 0 else np.nan,
-                'W_statistic': W.iloc[i, 0] if W.shape[1] > 0 else np.nan,
-                'p_value': p_val.iloc[i, 0] if p_val.shape[1] > 0 else np.nan,
-                'q_value': q_val.iloc[i, 0] if q_val.shape[1] > 0 else np.nan,
-                'significant': diff_abn.iloc[i, 0] if diff_abn.shape[1] > 0 else False
-            }
-            results_list.append(feature_result)
-        
-        results_df = pd.DataFrame(results_list)
-        results_df = results_df.sort_values('q_value')
-        
-        # Add taxonomy if available
-        if 'Taxon' in adata.var.columns:
-            results_df = results_df.merge(
-                adata.var[['Taxon']], 
-                left_on='feature', 
-                right_index=True, 
-                how='left'
-            )
-        
-        # Log summary
-        n_sig = results_df['significant'].sum()
-        logger.info(f"\n=== ANCOM-BC Results ===")
-        logger.info(f"Significant features: {n_sig}/{len(results_df)} ({n_sig/len(results_df)*100:.1f}%)")
-        logger.info(f"Top 10 significant features:")
-        logger.info(f"\n{results_df.head(10).to_string(index=False)}")
-        
-        # Save results
-        if output_dir:
-            output_dir.mkdir(exist_ok=True, parents=True)
-            output_file = output_dir / f"ancombc_results_{group_col}.csv"
-            results_df.to_csv(output_file, index=False)
-            logger.info(f"Results saved to: {output_file}")
-        
-        pandas2ri.deactivate()
-        
-        return results_df
-        
-    except Exception as e:
-        logger.error(f"ANCOM-BC failed: {e}")
-        logger.error(
-            "Ensure R is installed with ANCOMBC package:\n"
-            "  R> install.packages('BiocManager')\n"
-            "  R> BiocManager::install('ANCOMBC')"
-        )
-        pandas2ri.deactivate()
-        return None
-
-
-def simple_compositional_da(
-    adata: ad.AnnData,
-    group_col: str,
-    output_dir: Optional[Path] = None,
-    method: str = 'mannwhitneyu',
-    fdr_method: str = 'fdr_bh',
     alpha: float = 0.05,
     min_prevalence: float = 0.1,
-    pseudocount: float = 1.0
+    use_clr: bool = True
 ) -> pd.DataFrame:
     """
-    Simple compositional differential abundance using CLR transformation.
-    
-    This is a fallback method when ANCOM-BC is unavailable. It:
-    1. CLR-transforms counts to address compositionality
-    2. Tests group differences on CLR-transformed abundances
-    3. Applies FDR correction
-    
-    Parameters
-    ----------
-    adata : ad.AnnData
-        AnnData object
-    group_col : str
-        Grouping column
-    output_dir : Optional[Path], optional
-        Output directory
-    method : str, optional
-        Statistical test ('mannwhitneyu', 'ttest'), by default 'mannwhitneyu'
-    fdr_method : str, optional
-        FDR correction method, by default 'fdr_bh'
-    alpha : float, optional
-        Significance threshold, by default 0.05
-    min_prevalence : float, optional
-        Minimum prevalence filter, by default 0.1
-    pseudocount : float, optional
-        Pseudocount for CLR, by default 1.0
-        
-    Returns
-    -------
-    pd.DataFrame
-        Differential abundance results
+    Run Wilcoxon rank-sum (Mann-Whitney U) test.
+    Non-parametric test, robust for compositional data if CLR transformed.
     """
-    logger.info("=== Simple Compositional DA (CLR + {method.upper()}) ===")
-    
-    if group_col not in adata.obs.columns:
-        logger.error(f"Group column '{group_col}' not found")
-        return pd.DataFrame()
+    logger.info(f"Running Wilcoxon test for group: {group_col}")
     
     # Get groups
-    groups = adata.obs[group_col].unique()
+    groups = adata.obs[group_col].dropna().unique()
     if len(groups) != 2:
-        logger.error(f"Requires exactly 2 groups, found {len(groups)}")
-        return pd.DataFrame()
+        raise ValueError(f"Wilcoxon test requires exactly 2 groups, found {len(groups)}")
     
-    # CLR transformation
-    if 'raw_counts' in adata.layers:
-        counts = adata.layers['raw_counts']
+    # Prepare data
+    if use_clr:
+        # Local CLR implementation to avoid circular imports
+        counts = adata.X.toarray() if issparse(adata.X) else adata.X
+        pseudocount = 1.0
+        gmeans = np.exp(np.mean(np.log(counts + pseudocount), axis=1, keepdims=True))
+        data_transformed = pd.DataFrame(
+            np.log((counts + pseudocount) / gmeans),
+            index=adata.obs_names,
+            columns=adata.var_names
+        )
     else:
-        counts = adata.X
-    
-    if issparse(counts):
-        counts = counts.toarray()
-    
-    # Add pseudocount and CLR transform
-    counts_pseudo = counts + pseudocount
-    geo_means = stats.gmean(counts_pseudo, axis=1, keepdims=True)
-    clr_data = np.log(counts_pseudo / geo_means)
+        data_transformed = adata.to_df()
     
     # Filter by prevalence
-    prevalence = (counts > 0).sum(axis=0) / counts.shape[0]
+    prevalence = (adata.to_df() > 0).mean()
     keep_features = prevalence >= min_prevalence
+    data_filt = data_transformed.loc[:, keep_features]
     
-    logger.info(f"Filtering: {np.sum(keep_features)}/{len(keep_features)} features pass {min_prevalence*100}% prevalence")
+    logger.info(f"Testing {keep_features.sum()} features (prevalence >= {min_prevalence})")
     
-    clr_data = clr_data[:, keep_features]
-    feature_names = adata.var_names[keep_features]
-    
-    # Perform tests
+    # Run tests
     results = []
-    
-    for i, feature in enumerate(feature_names):
-        group1_data = clr_data[adata.obs[group_col] == groups[0], i]
-        group2_data = clr_data[adata.obs[group_col] == groups[1], i]
+    for feature in data_filt.columns:
+        g1_data = data_filt.loc[adata.obs[group_col] == groups[0], feature]
+        g2_data = data_filt.loc[adata.obs[group_col] == groups[1], feature]
         
-        # Statistical test
-        if method == 'mannwhitneyu':
-            stat, p_val = stats.mannwhitneyu(group1_data, group2_data, alternative='two-sided')
-        elif method == 'ttest':
-            stat, p_val = stats.ttest_ind(group1_data, group2_data)
-        else:
-            raise ValueError(f"Unknown method: {method}")
-        
-        # Effect size (difference in mean CLR values)
-        mean_diff = np.mean(group1_data) - np.mean(group2_data)
-        
-        # Calculate effect sizes
-        effect_size_cohens = np.nan
-        effect_size_cliffs = np.nan
-        effect_interpretation = 'unknown'
-        
-        if EFFECT_SIZES_AVAILABLE:
-            try:
-                # Cohen's d for parametric effect size
-                effect_size_cohens = cohens_d(group1_data, group2_data)
-                
-                # Cliff's delta for non-parametric effect size
-                effect_size_cliffs = cliffs_delta(group1_data, group2_data)
-                
-                # Use Cliff's delta interpretation (more robust)
-                effect_interpretation = interpret_effect_size(
-                    effect_size_cliffs, 
-                    method='cliffs_delta'
-                )
-            except Exception as e:
-                logger.debug(f"Effect size calculation failed for {feature}: {e}")
-        
-        results.append({
-            'feature': feature,
-            'mean_clr_group1': np.mean(group1_data),
-            'mean_clr_group2': np.mean(group2_data),
-            'clr_difference': mean_diff,
-            'cohens_d': effect_size_cohens,
-            'cliffs_delta': effect_size_cliffs,
-            'effect_size_interpretation': effect_interpretation,
-            'test_statistic': stat,
-            'p_value': p_val
-        })
+        try:
+            stat, p_val = stats.mannwhitneyu(g1_data, g2_data, alternative='two-sided')
+            
+            # Calculate Effect Sizes if available
+            cliffs = np.nan
+            if EFFECT_SIZES_AVAILABLE:
+                cliffs = cliffs_delta(g1_data.values, g2_data.values)
+
+            results.append({
+                'feature': feature,
+                'statistic': stat,
+                'p_value': p_val,
+                'cliffs_delta': cliffs,
+                'median_group1': np.median(g1_data),
+                'median_group2': np.median(g2_data)
+            })
+        except Exception as e:
+            continue
     
     results_df = pd.DataFrame(results)
     
     # FDR correction
-    reject, p_adj, _ = apply_multiple_testing_correction(
-        results_df['p_value'].values, method=fdr_method, alpha=alpha
-    )
-    
-    results_df['p_value_adjusted'] = p_adj
-    results_df['significant'] = reject
-    
-    # Add biological significance flag (requires both statistical significance AND large effect)
-    if EFFECT_SIZES_AVAILABLE and 'cliffs_delta' in results_df.columns:
-        results_df['biologically_significant'] = (
-            (results_df['cliffs_delta'].abs() >= 0.33) &  # At least medium effect (Cliff's delta)
-            (results_df['p_value_adjusted'] < alpha)
-        )
+    if not results_df.empty:
+        _, p_adj, _, _ = multipletests(results_df['p_value'].fillna(1.0), method='fdr_bh')
+        results_df['p_adj'] = p_adj
+    else:
+        results_df['p_adj'] = 1.0
         
-        n_bio_sig = results_df['biologically_significant'].sum()
-        logger.info(f"Biologically significant features: {n_bio_sig}/{len(results_df)} ({n_bio_sig/len(results_df)*100:.1f}%)")
-    
     # Add taxonomy
     if 'Taxon' in adata.var.columns:
-        taxon_map = adata.var.loc[feature_names, 'Taxon']
-        results_df['Taxon'] = results_df['feature'].map(taxon_map)
+        results_df = results_df.merge(adata.var[['Taxon']], left_on='feature', right_index=True, how='left')
+        
+    return results_df.sort_values('p_adj')
+
+# ==================================================================================== #
+#                                     R METHODS
+# ==================================================================================== #
+
+def run_ancombc(
+    adata: ad.AnnData,
+    group_col: str,
+    formula: Optional[str] = None,
+    p_adj_method: str = 'fdr_bh',
+    alpha: float = 0.05
+) -> pd.DataFrame:
+    """Wrapper for ANCOM-BC (Bias Correction)."""
+    if not _check_r_package('ANCOMBC'):
+        raise RuntimeError("ANCOMBC R package not available.")
+        
+    logger.info(f"Running ANCOM-BC for group: {group_col}")
     
-    # Sort by p-value
-    results_df = results_df.sort_values('p_value_adjusted')
+    # Prepare data
+    counts = adata.X.toarray() if issparse(adata.X) else adata.X
+    count_df = pd.DataFrame(counts.T, index=adata.var_names, columns=adata.obs_names)
+    metadata = adata.obs[[group_col]].copy()
     
-    # Log summary
-    n_sig = results_df['significant'].sum()
-    logger.info(f"Significant features: {n_sig}/{len(results_df)} ({n_sig/len(results_df)*100:.1f}%)")
+    if formula is None: formula = f"~{group_col}"
     
-    if output_dir:
-        output_dir.mkdir(exist_ok=True, parents=True)
-        output_file = output_dir / f"simple_da_results_{group_col}.csv"
-        results_df.to_csv(output_file, index=False)
-        logger.info(f"Results saved to: {output_file}")
+    with conversion.localconverter(ro.default_converter + pandas2ri.converter):
+        r_counts = pandas2ri.py2rpy(count_df)
+        r_meta = pandas2ri.py2rpy(metadata)
+        
+        ro.r.assign('counts_df', r_counts)
+        ro.r.assign('metadata_df', r_meta)
+        
+        r_script = f"""
+        library(phyloseq); library(ANCOMBC)
+        otu_mat <- as.matrix(counts_df)
+        sample_df <- sample_data(metadata_df)
+        ps <- phyloseq(otu_table(otu_mat, taxa_are_rows = TRUE), sample_df)
+        
+        out <- ancombc(phyloseq = ps, formula = "{formula}", 
+                       p_adj_method = "{p_adj_method}", alpha = {alpha}, 
+                       global = TRUE)
+        out
+        """
+        ancom_res = ro.r(r_script)
+        res = ancom_res.rx2('res')
+        
+        # Extract components
+        lfc = pandas2ri.rpy2py(res.rx2('lfc'))
+        q_val = pandas2ri.rpy2py(res.rx2('q_val'))
+        
+    # Construct result DataFrame
+    results = []
+    for i, feature in enumerate(count_df.index):
+        results.append({
+            'feature': feature,
+            'log_fold_change': lfc.iloc[i, 0] if not lfc.empty else 0,
+            'p_adj': q_val.iloc[i, 0] if not q_val.empty else 1.0
+        })
+        
+    return pd.DataFrame(results).sort_values('p_adj')
+
+def run_deseq2(
+    adata: ad.AnnData,
+    group_col: str,
+    alpha: float = 0.05
+) -> pd.DataFrame:
+    """Run DESeq2 differential abundance."""
+    if not _check_r_package('DESeq2'):
+        raise RuntimeError("DESeq2 R package not available.")
+        
+    logger.info(f"Running DESeq2 for group: {group_col}")
     
-    return results_df
+    counts = adata.X.toarray() if issparse(adata.X) else adata.X
+    counts = counts.T.astype(int)
+    
+    # Filter very low counts to help DESeq2
+    keep = counts.sum(axis=1) >= 10
+    counts = counts[keep]
+    features = adata.var_names[keep]
+    
+    coldata = adata.obs[[group_col]].copy()
+    coldata.columns = ['group']
+    
+    with conversion.localconverter(ro.default_converter + pandas2ri.converter):
+        r_counts = ro.r.matrix(ro.IntVector(counts.flatten()), nrow=counts.shape[0], ncol=counts.shape[1])
+        ro.r.assign('counts', r_counts)
+        ro.r.assign('coldata', pandas2ri.py2rpy(coldata))
+        
+        ro.r(f'''
+        library(DESeq2)
+        dds <- DESeqDataSetFromMatrix(countData=counts, colData=coldata, design=~group)
+        dds <- DESeq(dds, quiet=TRUE)
+        res <- results(dds, alpha={alpha})
+        res_df <- as.data.frame(res)
+        ''')
+        res_df = pandas2ri.rpy2py(ro.r('res_df'))
+        
+    res_df['feature'] = features
+    res_df = res_df.rename(columns={'padj': 'p_adj', 'log2FoldChange': 'log2_fold_change'})
+    return res_df.sort_values('p_adj')
+
+def run_aldex2(
+    adata: ad.AnnData,
+    group_col: str,
+    alpha: float = 0.05
+) -> pd.DataFrame:
+    """Run ALDEx2 (ANOVA-Like Differential Expression)."""
+    if not _check_r_package('ALDEx2'): raise RuntimeError("ALDEx2 not available.")
+    
+    counts = adata.X.toarray() if issparse(adata.X) else adata.X
+    counts = counts.T.astype(int)
+    conds = adata.obs[group_col].astype(str).values
+    
+    with conversion.localconverter(ro.default_converter + pandas2ri.converter):
+        r_counts = pandas2ri.py2rpy(pd.DataFrame(counts, index=adata.var_names))
+        ro.r.assign('counts', r_counts)
+        ro.r.assign('conds', ro.StrVector(conds))
+        
+        ro.r('''
+        library(ALDEx2)
+        x <- aldex.clr(counts, conds, mc.samples=128, denom="all", verbose=FALSE)
+        xt <- aldex.ttest(x, verbose=FALSE)
+        xe <- aldex.effect(x, verbose=FALSE)
+        res <- data.frame(xt, xe)
+        ''')
+        res_df = pandas2ri.rpy2py(ro.r('res'))
+        
+    res_df['feature'] = adata.var_names
+    res_df = res_df.rename(columns={'we.eBH': 'p_adj', 'diff.btw': 'effect_size'})
+    return res_df.sort_values('p_adj')
+
+def run_linda(adata: ad.AnnData, group_col: str, alpha: float = 0.05) -> pd.DataFrame:
+    """Run LinDA (Linear Models for Differential Abundance)."""
+    if not _check_r_package('MicrobiomeStat'): raise RuntimeError("MicrobiomeStat/LinDA not available.")
+    
+    counts = adata.X.toarray() if issparse(adata.X) else adata.X
+    otu = pd.DataFrame(counts.T, index=adata.var_names, columns=adata.obs_names)
+    meta = adata.obs[[group_col]].copy()
+    
+    with conversion.localconverter(ro.default_converter + pandas2ri.converter):
+        ro.r.assign('otu', pandas2ri.py2rpy(otu))
+        ro.r.assign('meta', pandas2ri.py2rpy(meta))
+        
+        ro.r(f'''
+        library(MicrobiomeStat)
+        res <- linda(otu, meta, formula = '~{group_col}', alpha = {alpha})
+        out <- res$output[[1]] # First variable results
+        ''')
+        res_df = pandas2ri.rpy2py(ro.r('out'))
+        
+    res_df['feature'] = res_df.index
+    res_df = res_df.rename(columns={'padj': 'p_adj', 'log2FoldChange': 'log2_fold_change'})
+    return res_df.sort_values('p_adj')
+
+def run_corncob(adata: ad.AnnData, group_col: str, alpha: float = 0.05) -> pd.DataFrame:
+    """
+    Run corncob (Count Regression for Correlated Observations with the Beta-binomial).
+    Good for detecting differential variability and abundance.
+    """
+    if not _check_r_package('corncob'): raise RuntimeError("corncob not available.")
+    
+    logger.info(f"Running corncob for group: {group_col}")
+    
+    counts = adata.X.toarray() if issparse(adata.X) else adata.X
+    otu = pd.DataFrame(counts.T, index=adata.var_names, columns=adata.obs_names)
+    meta = adata.obs[[group_col]].copy()
+    
+    with conversion.localconverter(ro.default_converter + pandas2ri.converter):
+        ro.r.assign('otu', pandas2ri.py2rpy(otu))
+        ro.r.assign('meta', pandas2ri.py2rpy(meta))
+        
+        ro.r(f'''
+        library(phyloseq)
+        library(corncob)
+        
+        otu_mat <- as.matrix(otu)
+        sample_df <- sample_data(meta)
+        ps <- phyloseq(otu_table(otu_mat, taxa_are_rows = TRUE), sample_df)
+        
+        # Run differential test on all taxa
+        da_analysis <- differentialTest(formula = ~ {group_col},
+                                        phi.formula = ~ {group_col},
+                                        formula_null = ~ 1,
+                                        phi.formula_null = ~ {group_col},
+                                        test = "Wald", boot = FALSE,
+                                        data = ps,
+                                        fdr_cutoff = {alpha})
+        
+        # Extract results
+        sig_taxa <- da_analysis$significant_taxa
+        p_values <- da_analysis$p
+        p_adj <- da_analysis$p_fdr
+        
+        res_df <- data.frame(
+            feature = names(p_values),
+            p_value = p_values,
+            p_adj = p_adj
+        )
+        ''')
+        res_df = pandas2ri.rpy2py(ro.r('res_df'))
+        
+    # Clean up results
+    res_df = res_df.sort_values('p_adj')
+    res_df['significant'] = res_df['p_adj'] < alpha
+    return res_df
+
+# ==================================================================================== #
+#                                CONSENSUS & COMPARISON
+# ==================================================================================== #
+
+def compare_da_methods(
+    adata: ad.AnnData,
+    methods: List[str],
+    group_col: str,
+    alpha: float = 0.05,
+    min_prevalence: float = 0.1,
+    output_dir: Optional[Path] = None
+) -> Dict:
+    """Run multiple DA methods and compare results."""
+    
+    func_map = {
+        'wilcoxon': run_wilcoxon,
+        'deseq2': run_deseq2,
+        'ancombc': run_ancombc,
+        'aldex2': run_aldex2,
+        'linda': run_linda,
+        'corncob': run_corncob
+    }
+    
+    results = {}
+    significant_features = {}
+    
+    for method in methods:
+        if method not in func_map:
+            logger.warning(f"Unknown method {method}, skipping.")
+            continue
+            
+        try:
+            # Run method
+            if method == 'wilcoxon':
+                res = func_map[method](adata, group_col, alpha, min_prevalence)
+            else:
+                res = func_map[method](adata, group_col, alpha=alpha)
+                
+            results[method] = res
+            
+            # Identify significant features
+            sig = set(res[res['p_adj'] < alpha]['feature'])
+            significant_features[method] = sig
+            logger.info(f"{method}: {len(sig)} significant features found.")
+            
+        except Exception as e:
+            logger.error(f"Method {method} failed: {e}")
+            
+    return {'results': results, 'significant_features': significant_features}
+
+def consensus_da_features(
+    comparison_results: Dict,
+    min_methods: int = 2,
+    max_p_adj: float = 0.05
+) -> pd.DataFrame:
+    """Extract consensus features found by multiple methods."""
+    sig_sets = comparison_results['significant_features']
+    if not sig_sets: return pd.DataFrame()
+    
+    all_features = set.union(*sig_sets.values())
+    consensus_data = []
+    
+    for feat in all_features:
+        # Which methods found this feature?
+        found_by = [m for m, s in sig_sets.items() if feat in s]
+        n_found = len(found_by)
+        
+        if n_found >= min_methods:
+            consensus_data.append({
+                'feature': feat,
+                'n_methods': n_found,
+                'methods': ", ".join(found_by)
+            })
+            
+    return pd.DataFrame(consensus_data).sort_values('n_methods', ascending=False)

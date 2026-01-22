@@ -20,20 +20,20 @@ logger = get_logger()
 
 # --- Paths & Datasets ---
 class PathsConfig(BaseModel):
-    base: DirectoryPath
-    project: Path
-    manual_metadata: DirectoryPath
-    blast_db: Path
-    vsearch_db: FilePath
-    phylogeny: DirectoryPath
-    classifier: DirectoryPath
-    dataset_list: FilePath
-    dataset_info: FilePath
+    base: DirectoryPath = Field(..., description="Root working directory containing workflow data and resources.")
+    project: Path = Field(..., description="Project-specific output directory where results will be saved.")
+    manual_metadata: DirectoryPath = Field(..., description="Directory containing manually curated metadata files (e.g., for specific studies).")
+    blast_db: Path = Field(..., description="Path to the BLAST reference database directory (e.g., SILVA).")
+    vsearch_db: FilePath = Field(..., description="Path to the VSEARCH reference database file (usually a .udb file).")
+    phylogeny: DirectoryPath = Field(..., description="Directory containing reference files for phylogeny (e.g., SEPP reference database).")
+    classifier: DirectoryPath = Field(..., description="Directory containing the pre-trained taxonomic classifier artifacts.")
+    dataset_list: FilePath = Field(..., description="Path to the text file listing the specific dataset IDs to be processed.")
+    dataset_info: FilePath = Field(..., description="Path to the TSV file containing detailed metadata for all available datasets.")
     primer_db: Path = Field(..., description="Path to the primer SQLite database (primer_data.db).")
 
 class DatasetConfig(BaseModel):
-    dataset_list: FilePath
-    dataset_info: FilePath
+    dataset_list: FilePath = Field(..., description="Path to the text file listing the specific dataset IDs to be processed.")
+    dataset_info: FilePath = Field(..., description="Path to the TSV file containing detailed metadata for all available datasets.")
 
 # --- Sequence Processing (Upstream) ---
 class ENAConfig(BaseModel):
@@ -212,16 +212,95 @@ class MLTableConfig(BaseModel):
     levels: List[str]
     methods: List[str]
 
+# 1. Define Overfitting Prevention (To stop permutation tests)
+class OverfittingPreventionConfig(BaseModel):
+    enabled: bool = True
+    permutation_test: bool = False  # <--- CRITICAL: Defines the flag to stop the crash
+    n_splits_outer: int = 5
+    test_size: float = 0.2
+
+# 2. Define Batch Covariates (To support the config you pasted)
+class BatchCovariateSettings(BaseModel):
+    enabled: bool = True
+    covariate_columns: List[str] = []
+    # Add loose dict support for the sub-sections (covariate_adjustment, etc.)
+    # or define them strictly if you prefer. Using Dict[str, Any] is safer for rapid dev.
+    covariate_adjustment: Dict[str, Any] = {}
+    stratified_prediction: Dict[str, Any] = {}
+    confounding_detection: Dict[str, Any] = {}
+    comparison: Dict[str, Any] = {}
+    
+class MLModelSettings(BaseModel):
+    # Toggle specific model architectures
+    enable_random_forest: bool = False
+    enable_catboost: bool = True
+    
+    # Task toggles
+    enable_regression: bool = True
+    enable_classification: bool = True
+    
+    # Shared/Specific Hyperparameters
+    n_estimators: int = 100
+    max_depth: int = 15
+    
+    # CatBoost Specifics (Optional)
+    catboost_iterations: int = 500
+    catboost_learning_rate: float = 0.03
+
+class MLValidationSettings(BaseModel):
+    test_size: float = 0.3
+    cv_folds: int = 5
+    stratify: bool = True
+
+class MLGridSettings(BaseModel):
+    # The "Matrix" of options to iterate over
+    levels: List[str] = ["Genus"] # e.g. ["Phylum", "Family", "Genus", "Species"]
+    transformations: List[str] = ["clr"] # e.g. ["clr", "binary", "relative", "log1p"]
+    
+    # Feature Selection Strategies to run for EACH combination
+    fs_strategies: List[str] = ["baseline", "agnostic", "group_validated"]
+    
+    # Batch Control Strategies to run for EACH combination
+    batch_strategies: List[str] = ["baseline", "covariate_adjusted", "stratified"]
+    
+# 3. Update the main MLConfig
 class MLConfig(BaseModel):
     enabled: bool
     load_existing: bool
     n_threads: int
     num_features: int
     step_size: int
+    
+    # Existing sections
     permutation_importance: MLPermutationImportanceConfig
     plots: MLPlotsConfig
     tables: Dict[str, MLTableConfig]
+    
+    # --- NEW SECTIONS ---
+    # Captures the targets list
+    targets: List[str] = Field(default_factory=list)
 
+    # If true, restrict ML to only the above targets (no auto-detection)
+    strict_targets: bool = Field(default=False, description="If true, only use explicitly listed targets for ML analysis.")
+
+    models: MLModelSettings = Field(default_factory=MLModelSettings)
+    validation: MLValidationSettings = Field(default_factory=MLValidationSettings)
+    grid_settings: MLGridSettings = Field(default_factory=MLGridSettings)
+    
+    # Captures the batch correction logic
+    batch_covariates: BatchCovariateSettings = Field(default_factory=BatchCovariateSettings)
+
+    # Captures the validation logic
+    overfitting_prevention: OverfittingPreventionConfig = Field(default_factory=OverfittingPreventionConfig)
+
+class OrdinationConfig(BaseModel):
+    enabled: bool = True
+    methods: List[str] = ["cca", "rda"]  # Optional: allow specifying methods
+
+class LegacyNetworkConfig(BaseModel):
+    enabled: bool = False  # Default to False since you have new networks
+    min_covariance: float = 0.3
+    
 class DownstreamConfig(BaseModel):
     enabled: bool
     find_subsets: bool
@@ -308,6 +387,8 @@ class AppConfig(BaseModel):
     stats: Dict[str, Any]
     beta_diversity: BetaDiversityConfig
     ml: MLConfig
+    ordination: OrdinationConfig = Field(default_factory=OrdinationConfig)
+    legacy_networks: LegacyNetworkConfig = Field(default_factory=LegacyNetworkConfig)
     faprotax: Dict[str, Any]
     top_features: Dict[str, Any]
     feature_maps: Dict[str, Any]

@@ -15,7 +15,7 @@ from scipy.stats import spearmanr
 from statsmodels.stats.multitest import multipletests
 
 from workflow_16s.downstream.steps.preprocessing import AnalysisUtils
-from workflow_16s.downstream.plotting import PlottingUtils
+from workflow_16s.downstream.visualization import PlottingUtils
 from workflow_16s.utils.logger import get_logger
 
 logger = get_logger("workflow_16s")

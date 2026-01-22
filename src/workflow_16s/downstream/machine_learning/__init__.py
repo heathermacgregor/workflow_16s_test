@@ -1,29 +1,36 @@
 """
-Machine learning module for microbiome analysis.
-
-Provides nested cross-validation and advanced feature selection methods.
+workflow_16s.downstream.machine_learning package
 """
 
-# Load from machine_learning.py module explicitly to avoid package conflict
-import importlib.util
-from pathlib import Path
-
-_ml_py = Path(__file__).parent.parent / "machine_learning.py"
-_spec = importlib.util.spec_from_file_location("workflow_16s.downstream._machine_learning_module", _ml_py)
-_ml_module = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_ml_module)
-
-run_machine_learning_analysis = _ml_module.run_machine_learning_analysis
-run_catboost_selection = _ml_module.run_catboost_selection
-
-from .nested_cv import (
-    nested_cross_validation,
-    compare_with_simple_cv
+from .main import (
+    prepare_batch_covariates, detect_confounding, plot_confounding_heatmap,
+    train_batch_residual_model, plot_feature_importances,
+    run_machine_learning_analysis, run_catboost_selection
 )
 
-__all__ = [
-    'run_machine_learning_analysis',
-    'run_catboost_selection',
-    'nested_cross_validation',
-    'compare_with_simple_cv',
+from .batch_control import (
+    run_ml_with_batch_control, create_comparison_plots,
+    create_summary_report
+)
+
+from .feature_selection import (
+    catboost_feature_selection, grid_search, filter_data, check_for_data_leakage,
+    perform_feature_selection, generate_shap_report, save_feature_importances
+)
+
+from .visualization import (
+    create_strategy_comparison_dashboard, create_group_fingerprint_comparison,
+    create_multi_group_comparison_heatmap, create_batch_effect_impact_plot,
+    generate_comprehensive_ml_report
+)
+
+__all__ = [ 
+    'prepare_batch_covariates', 'detect_confounding', 'plot_confounding_heatmap',
+    'train_batch_residual_model', 'plot_feature_importances',
+    'run_machine_learning_analysis', 'run_catboost_selection',
+    'create_strategy_comparison_dashboard', 'create_group_fingerprint_comparison',
+    'create_multi_group_comparison_heatmap', 'create_batch_effect_impact_plot',
+    'generate_comprehensive_ml_report', 'catboost_feature_selection',
+    'grid_search', 'filter_data', 'check_for_data_leakage',
+    'perform_feature_selection', 'generate_shap_report', 'save_feature_importances'
 ]

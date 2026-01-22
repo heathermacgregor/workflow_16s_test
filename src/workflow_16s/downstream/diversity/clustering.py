@@ -17,7 +17,7 @@ from scipy.sparse import issparse
 
 # Import from the correct steps location
 from workflow_16s.downstream.steps.preprocessing import AnalysisUtils
-from workflow_16s.downstream.plotting import PlottingUtils, DEFAULT_HEIGHT
+from workflow_16s.downstream.visualization import PlottingUtils, DEFAULT_HEIGHT
 from workflow_16s.utils.logger import get_logger
 from workflow_16s.utils.progress import get_progress_bar
 

@@ -40,7 +40,7 @@ DEFAULT_GROUP_COLUMNS = [
         'values': [True, False]
     },
 ]
-
+DEFAULT_PSEUDOCOUNT = 1.0
 
 # ==================================================================================== #
 # PROGRESS BARS

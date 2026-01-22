@@ -26,12 +26,12 @@ except ImportError:
 
 # Import ML visualization module
 try:
-    from workflow_16s.downstream.ml_visualization import generate_comprehensive_ml_report
+    from workflow_16s.downstream.machine_learning.visualization import generate_comprehensive_ml_report
     ML_VIZ_AVAILABLE = True
 except ImportError:
     ML_VIZ_AVAILABLE = False
     import logging
-    logging.getLogger(__name__).warning("ML visualization module not available")
+    logging.getLogger('workflow_16s').warning("ML visualization module not available")
 
 
 def run_results_synthesis(workflow):

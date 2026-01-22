@@ -1,319 +1,216 @@
-# ==================================================================================== #
-# statistics/effect_sizes.py
-# Effect Size Calculations for Microbiome Analyses
-# ==================================================================================== #
+"""
+Unified Statistics & Effect Sizes Module.
 
-from typing import Dict, Any, Optional, Tuple
+Consolidates effect size calculations (Cohen's d, Cliff's delta, etc.), 
+confidence intervals, and statistical test wrappers into a single location.
+
+References:
+- Cohen, J. (1988). Statistical Power Analysis for the Behavioral Sciences.
+- Cliff, N. (1993). Dominance statistics: Ordinal analyses to answer ordinal questions.
+"""
+
 import numpy as np
 import pandas as pd
 from scipy import stats
+from typing import Dict, Any, Optional, Tuple, Union, List
 from workflow_16s.utils.logger import get_logger
 
 logger = get_logger("workflow_16s")
 
 # ==================================================================================== #
+#                                 CORE CALCULATIONS
+# ==================================================================================== #
 
 def cohens_d(group1: np.ndarray, group2: np.ndarray) -> float:
     """
-    Calculate Cohen's d effect size for two independent groups.
-    
-    Cohen's d measures the standardized difference between two means,
-    expressed in standard deviation units.
-    
-    Parameters
-    ----------
-    group1 : np.ndarray
-        First group values
-    group2 : np.ndarray
-        Second group values
-        
-    Returns
-    -------
-    float
-        Cohen's d effect size
-        
-    Interpretation
-    --------------
-    |d| < 0.2  : negligible
-    0.2 ≤ |d| < 0.5 : small
-    0.5 ≤ |d| < 0.8 : medium
-    |d| ≥ 0.8  : large
-    
-    References
-    ----------
-    Cohen, J. (1988). Statistical Power Analysis for the Behavioral Sciences (2nd ed.).
+    Calculate Cohen's d (Standardized Mean Difference).
+    d = (mean1 - mean2) / pooled_SD
     """
     n1, n2 = len(group1), len(group2)
+    if n1 < 2 or n2 < 2: return np.nan
+    
+    mean1, mean2 = np.mean(group1), np.mean(group2)
     var1, var2 = np.var(group1, ddof=1), np.var(group2, ddof=1)
     
     # Pooled standard deviation
     pooled_std = np.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2))
     
-    if pooled_std == 0:
-        return 0.0
-        
-    d = (np.mean(group1) - np.mean(group2)) / pooled_std
-    return d
-
+    if pooled_std == 0: return 0.0
+    return (mean1 - mean2) / pooled_std
 
 def cliffs_delta(group1: np.ndarray, group2: np.ndarray) -> float:
     """
-    Calculate Cliff's Delta effect size (non-parametric alternative to Cohen's d).
-    
-    Cliff's Delta measures the probability that a randomly selected value from
-    one group is greater than a randomly selected value from another group.
-    It's robust to outliers and doesn't assume normality.
-    
-    Parameters
-    ----------
-    group1 : np.ndarray
-        First group values
-    group2 : np.ndarray
-        Second group values
-        
-    Returns
-    -------
-    float
-        Cliff's Delta, ranging from -1 to 1
-        
-    Interpretation
-    --------------
-    |δ| < 0.147 : negligible
-    0.147 ≤ |δ| < 0.33 : small
-    0.33 ≤ |δ| < 0.474 : medium
-    |δ| ≥ 0.474 : large
-    
-    References
-    ----------
-    Cliff, N. (1993). Dominance statistics: Ordinal analyses to answer ordinal questions.
+    Calculate Cliff's Delta (Non-parametric).
+    robust to outliers and ordinal data.
     """
     n1, n2 = len(group1), len(group2)
+    if n1 == 0 or n2 == 0: return np.nan
     
-    if n1 == 0 or n2 == 0:
-        return 0.0
-    
-    # Count dominances
+    # Count dominance: how many pairs where group1 > group2
     dominance = 0
-    for x1 in group1:
-        for x2 in group2:
-            if x1 > x2:
-                dominance += 1
-            elif x1 < x2:
-                dominance -= 1
+    for x in group1:
+        dominance += np.sum(x > group2) - np.sum(x < group2)
     
-    delta = dominance / (n1 * n2)
-    return delta
-
+    return dominance / (n1 * n2)
 
 def glass_delta(group1: np.ndarray, group2: np.ndarray, control_group: int = 2) -> float:
     """
-    Calculate Glass's Delta (effect size using control group SD).
-    
-    Unlike Cohen's d, Glass's Delta uses only the control group's standard
-    deviation, making it more appropriate when group variances differ substantially.
-    
-    Parameters
-    ----------
-    group1 : np.ndarray
-        First group (often treatment)
-    group2 : np.ndarray
-        Second group (often control)
-    control_group : int, optional
-        Which group is the control (1 or 2), by default 2
-        
-    Returns
-    -------
-    float
-        Glass's Delta effect size
-        
-    Interpretation
-    --------------
-    Same as Cohen's d
-    
-    References
-    ----------
-    Glass, G. V., McGaw, B., & Smith, M. L. (1981). Meta-analysis in social research.
+    Calculate Glass's Delta (uses only control group SD).
+    Useful when experimental manipulation alters variance.
     """
     control = group2 if control_group == 2 else group1
     control_std = np.std(control, ddof=1)
     
-    if control_std == 0:
-        return 0.0
-        
-    delta = (np.mean(group1) - np.mean(group2)) / control_std
-    return delta
-
+    if control_std == 0: return 0.0
+    return (np.mean(group1) - np.mean(group2)) / control_std
 
 def hedges_g(group1: np.ndarray, group2: np.ndarray) -> float:
     """
-    Calculate Hedges' g (bias-corrected Cohen's d for small samples).
-    
-    Hedges' g applies a correction factor to Cohen's d to reduce bias
-    in small sample sizes (n < 20 per group).
-    
-    Parameters
-    ----------
-    group1 : np.ndarray
-        First group values
-    group2 : np.ndarray
-        Second group values
-        
-    Returns
-    -------
-    float
-        Hedges' g effect size
-        
-    References
-    ----------
-    Hedges, L. V., & Olkin, I. (1985). Statistical methods for meta-analysis.
+    Calculate Hedges' g (Bias-corrected Cohen's d).
+    Recommended for small sample sizes (n < 20).
     """
     d = cohens_d(group1, group2)
     n = len(group1) + len(group2)
-    
-    # Correction factor
     correction = 1 - (3 / (4 * n - 9))
-    
-    g = d * correction
-    return g
+    return d * correction
 
+def log2_fold_change(group1: np.ndarray, group2: np.ndarray, pseudocount: float = 1.0) -> float:
+    """
+    Calculate Log2 Fold Change with pseudocount.
+    log2FC = log2((mean1 + P) / (mean2 + P))
+    """
+    mean1 = np.mean(group1) + pseudocount
+    mean2 = np.mean(group2) + pseudocount
+    return np.log2(mean1 / mean2)
+
+# ==================================================================================== #
+#                            INTERPRETATION & CONFIDENCE
+# ==================================================================================== #
 
 def interpret_effect_size(value: float, metric: str = 'cohens_d') -> str:
-    """
-    Interpret effect size magnitude based on established thresholds.
-    
-    Parameters
-    ----------
-    value : float
-        Effect size value
-    metric : str, optional
-        Type of effect size ('cohens_d', 'cliffs_delta', 'glass_delta', 'hedges_g')
-        
-    Returns
-    -------
-    str
-        Interpretation category
-    """
+    """Interpret effect size magnitude based on standard thresholds."""
     abs_val = abs(value)
     
-    if metric in ['cohens_d', 'glass_delta', 'hedges_g']:
-        if abs_val < 0.2:
-            return 'negligible'
-        elif abs_val < 0.5:
-            return 'small'
-        elif abs_val < 0.8:
-            return 'medium'
-        else:
-            return 'large'
-            
-    elif metric == 'cliffs_delta':
-        if abs_val < 0.147:
-            return 'negligible'
-        elif abs_val < 0.33:
-            return 'small'
-        elif abs_val < 0.474:
-            return 'medium'
-        else:
-            return 'large'
+    if metric == 'cliffs_delta':
+        if abs_val < 0.147: return 'negligible'
+        if abs_val < 0.33:  return 'small'
+        if abs_val < 0.474: return 'medium'
+        return 'large'
+    else: # Cohen's d / Hedges' g / Glass's Delta
+        if abs_val < 0.2: return 'negligible'
+        if abs_val < 0.5: return 'small'
+        if abs_val < 0.8: return 'medium'
+        return 'large'
     
-    return 'unknown'
+def interpret_cliffs_delta(d_val: float) -> str:
+    """
+    Interprets Cliff's Delta effect size.
+    Wrapper for interpret_effect_size to satisfy imports.
+    
+    Thresholds (Romano et al., 2006):
+    |d| < 0.147 : Negligible
+    |d| < 0.33  : Small
+    |d| < 0.474 : Medium
+    |d| >= 0.474: Large
+    """
+    return interpret_effect_size(d_val, metric='cliffs_delta')
 
+def interpret_cohens_d(d_val: float) -> str:
+    """
+    Interprets Cohen's d effect size.
+    Wrapper for interpret_effect_size to satisfy imports.
+    """
+    return interpret_effect_size(d_val, metric='cohens_d')
+
+def effect_size_confidence_interval(
+    group1: np.ndarray, 
+    group2: np.ndarray,
+    method: str = 'cohens_d',
+    confidence: float = 0.95,
+    n_bootstrap: int = 1000
+) -> Tuple[float, float]:
+    """
+    Calculate Bootstrap Confidence Interval for an effect size.
+    """
+    n1, n2 = len(group1), len(group2)
+    func_map = {
+        'cohens_d': cohens_d, 
+        'cliffs_delta': cliffs_delta, 
+        'hedges_g': hedges_g
+    }
+    
+    es_func = func_map.get(method, cohens_d)
+    bootstrap_es = []
+    
+    for _ in range(n_bootstrap):
+        # Resample with replacement
+        idx1 = np.random.choice(n1, size=n1, replace=True)
+        idx2 = np.random.choice(n2, size=n2, replace=True)
+        
+        boot_g1 = group1[idx1]
+        boot_g2 = group2[idx2]
+        
+        bootstrap_es.append(es_func(boot_g1, boot_g2))
+    
+    alpha = 1 - confidence
+    lower = np.percentile(bootstrap_es, 100 * alpha / 2)
+    upper = np.percentile(bootstrap_es, 100 * (1 - alpha / 2))
+    
+    return (lower, upper)
+
+# ==================================================================================== #
+#                                  WRAPPERS
+# ==================================================================================== #
 
 def calculate_all_effect_sizes(
-    group1: np.ndarray,
-    group2: np.ndarray,
-    group_names: Optional[Tuple[str, str]] = None
+    group1: np.ndarray, 
+    group2: np.ndarray, 
+    group_names: Optional[Tuple[str, str]] = None,
+    pseudocount: float = 1.0
 ) -> Dict[str, Any]:
-    """
-    Calculate multiple effect size metrics for comprehensive reporting.
-    
-    Parameters
-    ----------
-    group1 : np.ndarray
-        First group values
-    group2 : np.ndarray
-        Second group values
-    group_names : Optional[Tuple[str, str]], optional
-        Names for the two groups, by default None
-        
-    Returns
-    -------
-    Dict[str, Any]
-        Dictionary containing all effect sizes and interpretations
-    """
-    # Remove NaNs
+    """Compute all available effect size metrics for a pair of groups."""
+    # Remove NaNs for safety
     g1 = group1[~np.isnan(group1)]
     g2 = group2[~np.isnan(group2)]
     
     if len(g1) < 2 or len(g2) < 2:
-        return {
-            'error': 'Insufficient samples (need ≥2 per group)',
-            'n1': len(g1),
-            'n2': len(g2)
-        }
-    
+        return {'error': 'Insufficient samples (need ≥2 per group)'}
+
     results = {
-        'n1': len(g1),
-        'n2': len(g2),
-        'mean1': np.mean(g1),
-        'mean2': np.mean(g2),
-        'std1': np.std(g1, ddof=1),
-        'std2': np.std(g2, ddof=1),
-        'median1': np.median(g1),
-        'median2': np.median(g2)
+        'n1': len(g1), 'n2': len(g2),
+        'mean1': np.mean(g1), 'mean2': np.mean(g2),
+        'median1': np.median(g1), 'median2': np.median(g2),
+        'std1': np.std(g1, ddof=1), 'std2': np.std(g2, ddof=1),
+        'log2_fold_change': log2_fold_change(g1, g2, pseudocount)
     }
     
     if group_names:
-        results['group1_name'] = group_names[0]
-        results['group2_name'] = group_names[1]
-    
-    # Calculate effect sizes
-    try:
-        results['cohens_d'] = cohens_d(g1, g2)
-        results['cohens_d_interpretation'] = interpret_effect_size(
-            results['cohens_d'], 'cohens_d'
-        )
-    except Exception as e:
-        logger.warning(f"Cohen's d calculation failed: {e}")
-        results['cohens_d'] = np.nan
-    
-    try:
-        results['cliffs_delta'] = cliffs_delta(g1, g2)
-        results['cliffs_delta_interpretation'] = interpret_effect_size(
-            results['cliffs_delta'], 'cliffs_delta'
-        )
-    except Exception as e:
-        logger.warning(f"Cliff's Delta calculation failed: {e}")
-        results['cliffs_delta'] = np.nan
-    
-    try:
-        results['glass_delta'] = glass_delta(g1, g2)
-        results['glass_delta_interpretation'] = interpret_effect_size(
-            results['glass_delta'], 'glass_delta'
-        )
-    except Exception as e:
-        logger.warning(f"Glass's Delta calculation failed: {e}")
-        results['glass_delta'] = np.nan
-    
-    try:
-        results['hedges_g'] = hedges_g(g1, g2)
-        results['hedges_g_interpretation'] = interpret_effect_size(
-            results['hedges_g'], 'hedges_g'
-        )
-    except Exception as e:
-        logger.warning(f"Hedges' g calculation failed: {e}")
-        results['hedges_g'] = np.nan
-    
-    # Add recommendation
-    if not np.isnan(results.get('cliffs_delta', np.nan)):
-        if abs(results['cliffs_delta']) >= 0.33:
-            results['biological_significance'] = 'likely meaningful'
-        elif abs(results['cliffs_delta']) >= 0.147:
-            results['biological_significance'] = 'potentially meaningful'
-        else:
-            results['biological_significance'] = 'negligible'
-    
-    return results
+        results['group1_name'], results['group2_name'] = group_names
 
+    # Calculate standard metrics with interpretations
+    metrics = [
+        (cohens_d, 'cohens_d'), 
+        (cliffs_delta, 'cliffs_delta'), 
+        (hedges_g, 'hedges_g'),
+        (glass_delta, 'glass_delta')
+    ]
+    
+    for func, name in metrics:
+        try:
+            val = func(g1, g2)
+            results[name] = val
+            results[f'{name}_interpretation'] = interpret_effect_size(val, name)
+        except Exception as e:
+            logger.debug(f"{name} calculation failed: {e}")
+            results[name] = np.nan
+
+    # Add biological significance flag based on Cliff's Delta (Robust)
+    cd = abs(results.get('cliffs_delta', 0))
+    if cd >= 0.33: results['biological_significance'] = 'likely meaningful'
+    elif cd >= 0.147: results['biological_significance'] = 'potentially meaningful'
+    else: results['biological_significance'] = 'negligible'
+
+    return results
 
 def effect_size_with_stats(
     data: pd.DataFrame,
@@ -322,46 +219,31 @@ def effect_size_with_stats(
     test: str = 'mannwhitneyu'
 ) -> pd.DataFrame:
     """
-    Combine statistical test with effect size calculations.
-    
-    Parameters
-    ----------
-    data : pd.DataFrame
-        Data containing values and grouping
-    value_col : str
-        Column name for values to compare
-    group_col : str
-        Column name for grouping variable
-    test : str, optional
-        Statistical test ('mannwhitneyu', 'ttest'), by default 'mannwhitneyu'
-        
-    Returns
-    -------
-    pd.DataFrame
-        Results with p-value and effect sizes
+    Run a statistical test AND calculate effect sizes in one go.
+    Useful for high-throughput screening of taxa.
     """
-    groups = data[group_col].unique()
+    groups = data[group_col].dropna().unique()
     
     if len(groups) != 2:
         logger.error(f"Effect size requires exactly 2 groups, found {len(groups)}")
         return pd.DataFrame()
     
-    group1_data = data[data[group_col] == groups[0]][value_col].dropna().values
-    group2_data = data[data[group_col] == groups[1]][value_col].dropna().values
+    g1 = data[data[group_col] == groups[0]][value_col].dropna().values
+    g2 = data[data[group_col] == groups[1]][value_col].dropna().values
     
     # Statistical test
     if test == 'mannwhitneyu':
-        stat, p_val = stats.mannwhitneyu(group1_data, group2_data, alternative='two-sided')
+        stat, p_val = stats.mannwhitneyu(g1, g2, alternative='two-sided')
         test_name = 'Mann-Whitney U'
     elif test == 'ttest':
-        stat, p_val = stats.ttest_ind(group1_data, group2_data)
-        test_name = 'Independent t-test'
+        stat, p_val = stats.ttest_ind(g1, g2, equal_var=False)
+        test_name = 'Welch t-test'
     else:
         raise ValueError(f"Unknown test: {test}")
     
     # Effect sizes
     effect_sizes = calculate_all_effect_sizes(
-        group1_data, group2_data, group_names=(groups[0], groups[1])
+        g1, g2, group_names=(str(groups[0]), str(groups[1]))
     )
     
     # Combine results

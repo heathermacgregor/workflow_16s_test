@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('workflow_16s')
 
 
 def run_comprehensive_qc(workflow):

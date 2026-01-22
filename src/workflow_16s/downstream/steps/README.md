@@ -109,10 +109,47 @@ The `DownstreamWorkflow` class maintains state across steps:
 - `priority_numeric`: Key numeric variables for analysis
 - `cst_col`: Community state type column name (from CST analysis)
 
+
 ### Output Directories
 - `plot_dir_alpha`, `plot_dir_beta`, `plot_dir_stats`, etc.
 - `catboost_output_dir`: CatBoost feature selection results
 - `picrust2_output_dir`: PICRUSt2 functional predictions
+
+#### ML Output Directory Structure (v2.1+)
+
+**To prevent overwriting results from repeated or context-specific ML runs (e.g., pre-QC, post-QC), all CatBoost/ML outputs are now saved under a unique run context directory.**
+
+**Structure:**
+
+```
+catboost_output_dir/
+  <run_context>/           # e.g., pre_qc, post_qc, or custom string
+    <strategy>/          # baseline, agnostic, group_validated
+      Genus_<target>/  # e.g., Genus_facility_match
+        results_summary.json
+        shap_report_details.csv
+        ...
+```
+
+**Example:**
+
+```
+04_analysis/catboost_feature_selection/
+  pre_qc/
+    baseline/Genus_facility_match/results_summary.json
+    agnostic/Genus_facility_match/results_summary.json
+    ...
+  post_qc/
+    baseline/Genus_facility_match/results_summary.json
+    ...
+```
+
+**How run context is set:**
+- The workflow will use `workflow.run_context` if present, otherwise falls back to `workflow.qc_state` or 'default_run'.
+- You can set this attribute on the workflow object to control output separation.
+
+**Why:**
+- This ensures that results from different workflow states (e.g., before/after QC, different parameterizations) are never overwritten and are easy to compare.
 
 ## Configuration Schema
 

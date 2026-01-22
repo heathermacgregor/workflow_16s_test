@@ -13,9 +13,7 @@ Quick start:
     >>> adata_clean = quick_qc(adata, output_dir='qc_results')
 """
 
-from .metadata_validator import MetadataValidator, ENVOOntology
 from .primer_qc import PrimerQC
-from .sample_validator import SampleIdentityValidator
 from .contamination_enhanced import (
     detect_contaminants_reference_based,
     detect_cross_sample_contamination,
@@ -28,7 +26,16 @@ from .validation import (
     validate_adata,
     check_dependencies,
     QCValidationError,
-    QCDependencyError
+    QCDependencyError,
+    MetadataValidator,
+    ENVOOntology,
+    SampleIdentityValidator
+)
+from .visualization import (
+    create_qc_impact_dashboard,
+    create_qc_interpretation_report,
+    plot_qc_metrics_over_sequencing_depth,
+    create_sample_qc_heatmap
 )
 
 __all__ = [
@@ -41,4 +48,14 @@ __all__ = [
     'remove_contaminants_enhanced',
     'ComprehensiveQC',
     'quick_qc',
+    'create_qc_impact_dashboard',
+    'create_qc_interpretation_report',
+    'plot_qc_metrics_over_sequencing_depth',
+    'create_sample_qc_heatmap',
+    'validate_config',
+    'validate_metadata',
+    'validate_adata',
+    'check_dependencies',
+    'QCValidationError',
+    'QCDependencyError'
 ]

@@ -187,7 +187,7 @@ metadata:
   # List of metadata columns to drop
   columns_to_drop: ['fastq_aspera', 'fastq_bytes', 'fastq_galaxy', 'fastq_md5'] 
   # List of metadata columns to force as numeric
-  force_numeric_columns: [] 
+  force_numeric_columns: [facility_distance_km] 
   # Mappings for categorical metadata columns
   categorical_mappings: {} 
   # Suffixes to collapse in metadata column names
@@ -598,7 +598,7 @@ stats:
 # Beta Diversity (Ordination)
 # -------------------------------------------------------------------
 beta_diversity: 
-  enabled: True
+  enabled: False
   load_existing: False # BROKEN
   # Max concurrent ordination tasks
   max_workers: 8       

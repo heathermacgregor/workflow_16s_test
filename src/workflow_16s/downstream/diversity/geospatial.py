@@ -5,7 +5,7 @@ import plotly.express as px
 from pathlib import Path
 from skbio.stats.distance import mantel, DistanceMatrix
 from sklearn.metrics.pairwise import haversine_distances
-from workflow_16s.downstream.plotting import PlottingUtils
+from workflow_16s.downstream.visualization import PlottingUtils
 from workflow_16s.utils.logger import get_logger
 
 logger = get_logger("workflow_16s")

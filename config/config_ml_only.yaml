@@ -15,8 +15,8 @@
 # -------------------------------------------------------------------
 paths:
   base: "/usr2/people/macgregor/amplicon/" 
-  project: "/usr2/people/macgregor/amplicon/project_01_ml_viz"  # Fresh directory for ML viz run 
-  blast_db: "/usr2/people/macgregor/blast_db/SILVA_16S_db" 
+  project: "/usr2/people/macgregor/amplicon/project_01"  
+  blast_db: "/usr2/people/macgregor/blast_db/SILVA_16S_db" # 
   vsearch_db: "/usr2/people/macgregor/blast_db/silva_nr99.udb"
   classifier: "/usr2/people/macgregor/amplicon/workflow_16s/resources/classifier/silva-138-99-515-806" 
   phylogeny: "/usr2/people/macgregor/amplicon/workflow_16s/resources/phylogeny/gg-2022-10-ssu-nr99" 
@@ -51,11 +51,11 @@ phylogeny:
 # -------------------------------------------------------------------
 verbose: True
 execution:
-  threads: 48        # INCREASED from 32
-  cpu_limit: 60      # INCREASED from 52 (Allow slightly higher peak)
-  max_concurrency: 10
+  threads: 16        # INCREASED from 32
+  cpu_limit: 16      # INCREASED from 52 (Allow slightly higher peak)
+  max_concurrency: 2
 cpu:
-  limit: 52
+  limit: 16
 
 # -------------------------------------------------------------------
 # WEB SCRAPING SETTINGS
@@ -216,7 +216,7 @@ preprocessing:
     key_cols: []
     cols_to_keep: []
   metadata_quality:
-    min_fullness: 0.4
+    min_fullness: 0.3
     min_samples: 100
     max_categories: 50
     standardize_dates: True
@@ -225,16 +225,16 @@ preprocessing:
     method: "fasttree"
     threads: 4
   filter:
-    enabled: False
+    enabled: True
     min_sequencing_depth: 1000
     min_sample_prevalence: 2
     target_gene:
       enabled: False
       keep_genes: ['16S']
       metadata_column: 'target_gene'
-    terms_to_exclude: []
-    contaminant_terms: []
-    admin_noise_columns: []
+    terms_to_exclude:  ['host-associated', 'mouse', 'homo sapien', 'gut', 'mice', 'sputum', 'cress', 'mouse']
+    contaminant_terms: ['chloroplast', 'mitochondria', 'eukaryota']
+    admin_noise_columns: ['fastq_ftp', 'fastq_sra', 'biosample_insdc_center_name', 'biosample_insdc_first_public', 'biosample_investigation_type', 'country_facility', 'EnvironmentalHealth_date', 'latitude_osm', 'longitude_osm', 'refs', 'source_url', 'source_version', 'temporal_coverage', 'time', 'unit', 'variable', 'admin', 'batch', 'sample_id', '#sampleid']
 
 # -------------------------------------------------------------------
 # COMPOSITIONAL DATA ANALYSIS - DISABLED
@@ -288,13 +288,13 @@ power_analysis:
 # DASHBOARD - DISABLED
 # -------------------------------------------------------------------
 dashboard:
-  enabled: False
+  enabled: True
 
 # -------------------------------------------------------------------
 # SAMPLE MAPS - DISABLED
 # -------------------------------------------------------------------
 maps:
-  enabled: False
+  enabled: True
 
 # -------------------------------------------------------------------
 # FEATURE TABLE PREPROCESSING - DISABLED (load existing)
@@ -331,6 +331,12 @@ alpha_diversity:
       levels: []
   metrics: []
 
+ordination:
+  enabled: False
+
+legacy_networks:
+  enabled: False
+
 # -------------------------------------------------------------------
 # STATISTICAL ANALYSES - DISABLED
 # -------------------------------------------------------------------
@@ -363,16 +369,70 @@ diversity:
 # -------------------------------------------------------------------
 # MACHINE LEARNING - **ENABLED** (MAIN FOCUS)
 # -------------------------------------------------------------------
+# -------------------------------------------------------------------
+# MACHINE LEARNING - UNIFIED CONFIGURATION
+# -------------------------------------------------------------------
 ml: 
+  strict_targets: true
   enabled: True 
-  load_existing: False 
-  n_threads: 10      # INCREASED (Give CatBoost massive power)
-  num_features: 500
+  load_existing: True 
+  n_threads: 16
+  num_features: 100
   step_size: 100
+  
+  # THE MATRIX
+  grid_settings:
+    levels: 
+      - "Genus"
+      #- "Family"
+    
+    transformations:
+      - "clr"
+      #- "binary" # Test presence/absence
+    
+    fs_strategies:
+      - "baseline"          # Standard random split
+      - "agnostic"          # Explicitly drops batch columns
+      - "batch_adjusted"    # Includes batch as a feature
+      - "group_validated"   # Uses GroupKFold (strict isolation)
+      
+    # Model Training Strategies (Random Forest / CatBoost)
+    batch_strategies:
+      - "baseline"          # No correction
+      - "covariate_adjusted" # Include batch vars as features
+      - "stratified"        # Two-stage residual modeling
+
+  # Define your targets HERE so they are read by MLConfig
+  targets:
+    - 'facility_match' # Primary target
+    - 'facility_distance_km' # Secondary target
+    #- 'facility_type' # Tertiary target (if data available)
+    #- 'facility_status' # Quaternary target (if data available)
+    #- 'nuclear_contamination_status' # Compare with facility matches
+  
   permutation_importance: 
-    enabled: True
+    enabled: False
+  
   plots:
     enabled: True
+    
+  # CRITICAL: This section explicitly disables the crash-prone test
+  overfitting_prevention:
+    enabled: True            # Keep the module on for Cross-Validation
+    permutation_test: False  # <--- THIS WILL NOW WORK
+  
+  models:
+    enable_random_forest: False
+    enable_catboost: True
+    enable_regression: True      # Disable all regression tasks
+    enable_classification: True
+    n_estimators: 500              # Increase trees for better performance
+    max_depth: 20
+    
+  validation:
+    test_size: 0.3                 # Use 80/20 split instead of 70/30
+    cv_folds: 10
+
   tables:
     raw:
       enabled: False
@@ -387,24 +447,18 @@ ml:
       levels: []
       methods: []
     clr_transformed:
-      enabled: True  # Primary table for ML
-      levels: ["genus"]  # Focus on genus level
-      methods: ["shap"]  # SHAP feature selection
+      enabled: True
+      levels: ["genus"]
+      methods: ["shap"]
     presence_absence:
       enabled: False
       levels: []
       methods: []
 
-# -------------------------------------------------------------------
-# MACHINE LEARNING - BATCH COVARIATE CONTROL
-# **ENABLED** - Run all 3 strategies
-# -------------------------------------------------------------------
-machine_learning:
+  # Merged Batch Covariates Section
   batch_covariates:
-    enabled: True  # *** ENABLED ***
-    
+    enabled: True
     covariate_columns:
-      - 'batch_original'
       - 'sequencing_center'
       - 'instrument_platform'
       - 'instrument_model'
@@ -412,44 +466,32 @@ machine_learning:
       - 'pcr_primer_fwd'
       - 'pcr_primer_rev'
       - 'target_subfragment'
-      - 'dna_extraction_method'
       - 'study_accession'
-      - 'dataset_id'
     
     covariate_adjustment:
-      enabled: True  # Strategy 1: Include batch as features
+      enabled: True
       output_suffix: '_batch_adjusted'
       one_hot_encode: True
       max_categories: 20
       scale_covariates: False
     
     stratified_prediction:
-      enabled: True  # Strategy 2: Two-stage residual analysis
+      enabled: True
       output_suffix: '_batch_residual'
       consistent_split: True
       save_batch_models: True
     
     confounding_detection:
-      enabled: True  # Warn about batch-target correlations
+      enabled: True
       correlation_threshold: 0.7
       methods: ['cramer_v', 'eta_squared', 'spearman']
       plot_confounding: True
     
     comparison:
-      enabled: True  # Compare all strategies
+      enabled: True
       compare_metrics: ['accuracy', 'r2', 'oob_score', 'feature_importance_overlap']
       plot_comparison: True
       generate_summary: True
-
-# -------------------------------------------------------------------
-# ML TARGETS - Define which variables to predict
-# -------------------------------------------------------------------
-ml_targets:
-  - 'facility_match'  # Primary target
-  - 'facility_distance_km'  # Secondary target
-  - 'facility_type'  # Tertiary target (if data available)
-  - 'facility_status'  # Quaternary target (if data available)
-  - 'nuclear_contamination_status'  # Compare with facility matches
 
 # -------------------------------------------------------------------
 # FUNCTIONAL PREDICTION - DISABLED
@@ -547,7 +589,7 @@ synthesis:
 # TOP FEATURES & FEATURE MAPS (Required by schema)
 # -------------------------------------------------------------------
 top_features:
-  enabled: False
+  enabled: True
   
 feature_maps:
-  enabled: False
+  enabled: True

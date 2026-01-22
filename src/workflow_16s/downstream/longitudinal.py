@@ -55,7 +55,7 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from statsmodels.stats.multitest import multipletests
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('workflow_16s')
 
 # Check for R and rpy2
 try:

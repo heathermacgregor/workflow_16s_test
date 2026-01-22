@@ -11,13 +11,12 @@ from workflow_16s.downstream.diversity import (
 from workflow_16s.downstream.machine_learning import (
     run_machine_learning_analysis, run_catboost_selection
 )
+from workflow_16s.downstream.steps.preprocessing import AnalysisUtils
 from workflow_16s.downstream.steps.synthesis import handle_strategy_impact_plot
-
-# Import new scientific analysis modules
-from workflow_16s.downstream.phylogenetic_diversity import phylogenetic_diversity_workflow
-from workflow_16s.downstream.differential_abundance import compare_da_methods, consensus_da_features
-from workflow_16s.downstream.compositional_networks import network_analysis_workflow
-from workflow_16s.downstream.metadata_profiler import profile_metadata, generate_html_report
+from workflow_16s.downstream.diversity.phylogenetic import phylogenetic_diversity_workflow
+from workflow_16s.downstream.statistics import compare_da_methods, consensus_da_features
+from workflow_16s.downstream.networks import network_analysis_workflow
+from workflow_16s.downstream.qc import profile_metadata, generate_html_report
 
 def run_analysis_suite(workflow):
     """
@@ -73,12 +72,7 @@ def run_analysis_suite(workflow):
     workflow.logger.info("4. Modular Analysis Suite: Executing modules...")
     if workflow.adata is None: return
     
-    # ------------------------------------------------------------------
-    # [CRITICAL FIX] GLOBAL DUPLICATE INDEX RESOLUTION
-    # ------------------------------------------------------------------
     # Ensure indices are unique BEFORE any analysis runs.
-    # This prevents "ValueError: cannot reindex on an axis with duplicate labels"
-    # in Alpha Diversity, Machine Learning, and Plotting.
     if not workflow.adata.obs_names.is_unique:
         workflow.logger.warning(f"⚠️ Duplicate sample IDs detected ({len(workflow.adata.obs_names) - len(workflow.adata.obs_names.unique())} duplicates).")
         workflow.logger.warning("   Resolving by appending suffixes (e.g. SampleA -> SampleA-1)...")
@@ -154,11 +148,13 @@ def run_analysis_suite(workflow):
     
     # 1. Community State Typing (CST)
     # Identifies dominant microbial community profiles
-    cst_col = run_community_state_typing(workflow.adata, workflow.plot_dir_beta, level='Genus')
-    if cst_col:
-        workflow.cst_col = cst_col
-        workflow.priority_categorical.append(cst_col)
-        workflow._plot_cst_vs_metadata(cst_col)
+    cst_enabled = False
+    if cst_enabled:
+        cst_col = run_community_state_typing(workflow.adata, workflow.plot_dir_beta, level='Genus')
+        if cst_col:
+            workflow.cst_col = cst_col
+            workflow.priority_categorical.append(cst_col)
+            workflow._plot_cst_vs_metadata(cst_col)
 
     # 2. Phylogenetic Diversity (NEW - if tree available and enabled)
     # Calculates Faith's PD (alpha) and UniFrac distances (beta)
@@ -187,13 +183,15 @@ def run_analysis_suite(workflow):
     
     # 3. Alpha Diversity
     # Measures within-sample richness and evenness (now includes Faith's PD if calculated)
-    #run_alpha_diversity(
-    #    workflow.adata, 
-    #    workflow.plot_dir_alpha, 
-    #    tree_path=tree_path, 
-    #    priority_categorical=workflow.priority_categorical, 
-    #    priority_numeric=workflow.priority_numeric
-    #)
+    alpha_diversity_enabled = False
+    if alpha_diversity_enabled:
+        run_alpha_diversity(
+            workflow.adata, 
+            workflow.plot_dir_alpha, 
+            tree_path=tree_path, 
+            priority_categorical=workflow.priority_categorical, 
+            priority_numeric=workflow.priority_numeric
+        )
     
     # 4. Multi-Method Differential Abundance Testing (NEW - if enabled)
     # Uses multiple DA methods and finds consensus features
@@ -245,72 +243,119 @@ def run_analysis_suite(workflow):
         except Exception as e:
             workflow.logger.warning(f"Differential abundance analysis failed: {e}")
     
-    # 5. Machine Learning & Comparative Strategy Modules
-    # Tests biomarkers under varying levels of batch control
-    ml_targets = ['facility_match', 'facility_distance_km']
-    catboost_strategies = [
-        {"name": "baseline", "drop_batch": False, "use_group": False},
-        {"name": "agnostic", "drop_batch": True, "use_group": False},
-        {"name": "group_validated", "drop_batch": True, "use_group": True}
-    ]
+    # 5. Machine Learning Matrix Execution
+    ml_config = getattr(workflow.config, 'ml', None)
+    # 5. Machine Learning Matrix Execution
+    ml_config = getattr(workflow.config, 'ml', None)
+    
+    if ml_config and ml_config.enabled:
+        # 1. Get Grid Settings (with defaults)
+        grid = getattr(ml_config, 'grid_settings', None)
+        levels = getattr(grid, 'levels', ["Genus"]) if grid else ["Genus"]
+        transforms = getattr(grid, 'transformations', ["clr"]) if grid else ["clr"]
+        
+        # Get strategies to run
+        fs_strategies = getattr(grid, 'fs_strategies', ["baseline", "agnostic", "group_validated"]) if grid else ["baseline", "agnostic", "group_validated"]
+        
+        # 2. Get Targets
+        strict_targets = ml_config.strict_targets
+        config_targets = ml_config.targets
+        
+        if strict_targets and config_targets:
+            workflow.logger.info(f"✓ Strict ML targets enabled. Using list from config: {config_targets}")
+            targets = config_targets
+        else:
+            targets = ['facility_match', 'facility_distance_km'] # Default fallback
 
-    for target in ml_targets:
-        strat_results = {}
-        for strat in catboost_strategies:
-            s_name = strat["name"]
-            out = workflow.catboost_output_dir / s_name
-            out.mkdir(exist_ok=True, parents=True)
-            
-            run_catboost_selection(
-                workflow.adata, out, level='Genus', priority_targets=[target], 
-                n_cpus=workflow.n_cpus, drop_batch=strat["drop_batch"],
-                use_group_kfold=strat["use_group"], batch_col='batch_original'
-            )
-            
-            # Harvest scores for strategy impact plotting in synthesis step
-            sum_p = out / f"Genus_{target}" / "results_summary.json"
-            if sum_p.exists():
-                with open(sum_p, 'r') as f: strat_results[s_name] = json.load(f)
+        # 3. Determine run context
+        run_context = getattr(workflow, 'run_context', None) or getattr(workflow, 'qc_state', None) or 'default_run'
+        
+        workflow.logger.info(f"🚀 Starting ML Matrix: {len(levels)} Levels x {len(transforms)} Transforms x {len(targets)} Targets")
 
-        # Generate stability tables and heatmaps
-        workflow._compare_catboost_strategies('Genus', target)
-        handle_strategy_impact_plot(workflow, target, strat_results)
-            
-    # 6. Standard Machine Learning Baseline WITH Batch Covariate Control
-    # Extract batch configuration from workflow config
-    batch_config = None
-    if hasattr(workflow.config, 'machine_learning'):
-        ml_config = workflow.config.machine_learning
-        if hasattr(ml_config, 'batch_covariates') and ml_config.batch_covariates.get('enabled', False):
-            batch_config = ml_config.batch_covariates
-            workflow.logger.info("✓ Batch covariate control enabled for machine learning")
+        # --- MATRIX LOOP ---
+        for lvl in levels:
+            for trans in transforms:
+                
+                # A. Prepare Data ONCE for this Level/Transform combo
+                workflow.logger.info(f"📋 Preparing Data: Level={lvl}, Transform={trans}")
+                
+                # Aggregation
+                adata_lvl = AnalysisUtils.get_analysis_adata(workflow.adata, level=lvl)
+                if adata_lvl is None: 
+                    workflow.logger.warning(f"Skipping level {lvl}: aggregation failed or empty.")
+                    continue
+                
+                # Transformation
+                X_transformed = AnalysisUtils.apply_transform(adata_lvl, method=trans)
+                
+                # Define Output Path context
+                # Structure: outputs/machine_learning/Genus/clr/
+                context_path = f"{lvl}/{trans}"
+                
+                for target in targets:
+                    
+                    # B. Run Feature Selection (CatBoost)
+                    # Output: outputs/catboost/Genus/clr/strategy/target/
+                    catboost_base = workflow.catboost_output_dir / lvl / trans
+                    catboost_base.mkdir(parents=True, exist_ok=True)
+                    
+                    # --- [UPDATED CALL: run_catboost_selection] ---
+                    run_catboost_selection(
+                        adata=workflow.adata,       # Original adata for metadata
+                        X_custom=X_transformed,     # Pre-transformed features
+                        catboost_output_dir=catboost_base,
+                        level=lvl,
+                        priority_targets=[target],
+                        strict_targets=True,        # We handle target looping here, so force strict
+                        strategies=fs_strategies,   # Configured strategies
+                        n_cpus=workflow.n_cpus,
+                        batch_col='batch_original', # Fallback handled inside function
+                        run_context=run_context
+                    )
+                    
+                    # C. Run Main ML Analysis (RandomForest / CatBoost)
+                    # Output: outputs/machine_learning/Genus/clr/
+                    ml_out = workflow.plot_dir_ml / lvl / trans
+                    ml_out.mkdir(parents=True, exist_ok=True)
+                    
+                    # Configure batch settings for this run context
+                    batch_cfg = ml_config.batch_covariates.dict() if ml_config.batch_covariates else {}
+                    batch_cfg['output_subdir'] = context_path # Helper for file naming
+                    
+                    # --- [UPDATED CALL: run_machine_learning_analysis] ---
+                    run_machine_learning_analysis(
+                        adata=workflow.adata,       # Original adata for metadata
+                        X_custom=X_transformed,     # Pre-transformed features
+                        plot_dir_ml=ml_out,
+                        level=lvl,
+                        priority_targets=[target],
+                        strict_targets=True,        # We handle target looping here
+                        batch_config=batch_cfg,
+                        ml_config=ml_config         # Pass full config for model toggles
+                    )
+
+        # Update global priority vars to match ML targets (for downstream plotting)
+        workflow.priority_vars = targets
+        workflow.logger.info("✅ ML Matrix Execution Complete.")
     
-    run_machine_learning_analysis(
-        adata=workflow.adata,
-        plot_dir_ml=workflow.plot_dir_ml,
-        level='Genus',
-        min_samples_per_group=10,
-        max_classes=10,
-        priority_targets=workflow.priority_vars,
-        batch_config=batch_config
-    )
+    # 5.7. Core Statistical Tests
+    taxa_metadata_statistics_enabled = False
+    if taxa_metadata_statistics_enabled:
+        run_taxa_metadata_statistics(
+            workflow.adata, 
+            ['Genus'], 
+            workflow.plot_dir_stats, 
+            workflow.n_cpus,
+            max_taxa=getattr(workflow.config, 'max_taxa_stats', 1000),
+            max_categorical=getattr(workflow.config, 'max_categorical_stats', 30)
+        )
     
-    # 7. Core Statistical Tests
-    run_taxa_metadata_statistics(
-        workflow.adata, 
-        ['Genus'], 
-        workflow.plot_dir_stats, 
-        workflow.n_cpus,
-        max_taxa=getattr(workflow.config, 'max_taxa_stats', 1000),
-        max_categorical=getattr(workflow.config, 'max_categorical_stats', 30)
-    )
-    
-    # 8. Compositional Network Analysis (NEW - if enabled)
+    # 5.8. Compositional Network Analysis (NEW - if enabled)
     # Infers co-occurrence networks accounting for compositionality
     # WHY: Standard correlation invalid for compositional data
     network_config = getattr(workflow.config, 'networks', None)
     network_enabled = getattr(network_config, 'enabled', False) if network_config else False
-    
+    network_enabled = False
     if network_enabled:
         try:
             workflow.logger.info("Running compositional network inference...")
@@ -326,7 +371,7 @@ def run_analysis_suite(workflow):
         except Exception as e:
             workflow.logger.warning(f"Compositional network analysis failed: {e}")
     
-    # 9. Longitudinal Analysis (NEW - if enabled and time-series data)
+    # 5.9. Longitudinal Analysis (NEW - if enabled and time-series data)
     # Temporal dynamics, trajectory clustering, stability metrics
     # WHY: Many microbiome studies track communities over time (contamination events)
     longitudinal_config = getattr(workflow.config, 'longitudinal', None)
@@ -380,9 +425,44 @@ def run_analysis_suite(workflow):
         except Exception as e:
             workflow.logger.warning(f"Longitudinal analysis failed: {e}")
     
-    # 10. Ordination & Networks (original)
-    run_constrained_ordination(workflow.adata, ['Genus'], workflow.plot_dir_beta, workflow.priority_vars)
-    run_network_analysis(workflow.adata, ['Genus'], workflow.plot_dir_network)
+    # 5.10. Ordination & Networks (original)
+    ord_config = getattr(workflow.config, 'ordination', None)
+    ord_enabled = getattr(ord_config, 'enabled', False) if ord_config else False
     
-    # 11. Beta Diversity (now includes UniFrac if available)
-    run_beta_diversity_and_stats(workflow.adata, ['Genus'], workflow.plot_dir_beta, tree_path=tree_path, n_cpus=workflow.n_cpus)
+    net_config = getattr(workflow.config, 'legacy_networks', None)
+    net_enabled = getattr(net_config, 'enabled', False) if net_config else False
+
+    if ord_enabled:
+        workflow.logger.info("Running constrained ordination (CCA/RDA)...")
+        run_constrained_ordination(
+            workflow.adata, 
+            ['Genus'], 
+            workflow.plot_dir_beta, 
+            workflow.priority_vars
+        )
+
+    if net_enabled:
+        workflow.logger.info("Running legacy network analysis...")
+        run_network_analysis(
+            workflow.adata, 
+            ['Genus'], 
+            workflow.plot_dir_network
+        )
+        
+    # 5.11. Beta Diversity (now includes UniFrac if available)
+    beta_config = getattr(workflow.config, 'beta_diversity', None)
+    beta_enabled = getattr(beta_config, 'enabled', False) if beta_config else False
+    
+    # Use existing Stats config (defined as Dict in schema)
+    stats_config = getattr(workflow.config, 'stats', {})
+    stats_enabled = stats_config.get('enabled', False) if isinstance(stats_config, dict) else False
+
+    if beta_enabled:
+        workflow.logger.info("Running beta diversity and statistics...")
+        run_beta_diversity_and_stats(
+            workflow.adata, 
+            ['Genus'], 
+            workflow.plot_dir_beta, 
+            tree_path=tree_path, 
+            n_cpus=workflow.n_cpus
+        )

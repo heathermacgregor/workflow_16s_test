@@ -98,6 +98,16 @@ def clean_metadata(adata: ad.AnnData, config: Union[AppConfig, dict]) -> Union[a
     if not is_enabled: return adata
 
     obs_df = adata.obs.copy()
+
+    # Find text variations of "missing" and converts them to a single numpy NaN
+    missing_variants = [
+        'nan', 'NaN', 'NAN', 'null', 'Null', 'NULL',  # Text variations
+        '', ' ', 'None'                               # Empty strings or python None
+    ]
+    
+    # Mtch the exact string so we don't accidentally replace parts of real words (e.g., 'banana' -> 'ba')
+    obs_df = obs_df.replace(to_replace=missing_variants, value=np.nan)
+
     obs_df, _ = standardize_dates(obs_df)
     adata.obs = obs_df
     return adata
@@ -282,6 +292,39 @@ class AnalysisUtils:
             logger.error(f"CLR transform failed: {e}")
             return pd.DataFrame(adata.X, index=adata.obs_names, columns=adata.var_names)
 
+    @staticmethod
+    def apply_transform(adata: ad.AnnData, method: str) -> pd.DataFrame:
+        """Applies requested transformation to adata.X and returns DataFrame."""
+        
+        # 1. Get Raw Data (Handle Sparse)
+        if issparse(adata.X): X = adata.X.toarray()
+        else: X = adata.X.copy()
+        
+        # 2. Apply Transformation
+        if method == 'raw':
+            X_trans = X
+            
+        elif method == 'binary':
+            X_trans = (X > 0).astype(int)
+            
+        elif method == 'relative': # Total Sum Scaling
+            row_sums = X.sum(axis=1, keepdims=True)
+            row_sums[row_sums == 0] = 1 # Avoid div by zero
+            X_trans = X / row_sums
+            
+        elif method == 'log1p':
+            X_trans = np.log1p(X)
+            
+        elif method == 'clr':
+            # Use existing robust CLR
+            return AnalysisUtils._clr_transform(adata, pseudocount=1)
+            
+        else:
+            logger.warning(f"Unknown transformation '{method}', using raw.")
+            X_trans = X
+
+        return pd.DataFrame(X_trans, index=adata.obs_names, columns=adata.var_names)
+    
     @staticmethod
     def find_plottable_metadata(adata: ad.AnnData, admin_noise_columns: Optional[List[str]] = None, fullness_threshold: float = 0.25, max_categories: int = 50) -> Dict[str, List[str]]:
         """Identifies metadata columns suitable for plotting."""

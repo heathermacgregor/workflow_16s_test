@@ -27,3 +27,6 @@ notebooks/anndata_pipeline_output/
 *.h5ad
 *.fasta
 *.fna
+src/config/*.json
+*.json
+garbage/

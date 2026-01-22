@@ -18,7 +18,24 @@ from .beta import run_beta_diversity_and_stats, run_constrained_ordination, run_
 from .clustering import run_community_state_typing
 from .statistics import run_taxa_metadata_statistics
 from .network import run_network_analysis
-
+from .phylogenetic import (
+    load_tree,
+    calculate_faith_pd,
+    calculate_unifrac,
+    calculate_phylogenetic_entropy,
+    prune_tree_to_features,
+    build_tree_fasttree,
+    insert_sequences_sepp,
+    plot_tree,
+    phylogenetic_diversity_workflow
+)
+from .rarefaction import (
+    calculate_rarefaction_curve,
+    rarefaction_curves_for_dataset,
+    plot_rarefaction_curves,
+    assess_sequencing_adequacy,
+    suggest_rarefaction_depth
+)
 __all__ = [
     'run_alpha_diversity',
     'run_beta_diversity_and_stats',
@@ -27,4 +44,18 @@ __all__ = [
     'run_community_state_typing',
     'run_taxa_metadata_statistics',
     'run_network_analysis',
+    'load_tree',
+    'calculate_faith_pd',  
+    'calculate_unifrac',
+    'calculate_phylogenetic_entropy',
+    'prune_tree_to_features',
+    'build_tree_fasttree',
+    'insert_sequences_sepp',
+    'plot_tree',
+    'phylogenetic_diversity_workflow',
+    'calculate_rarefaction_curve',
+    'rarefaction_curves_for_dataset',
+    'plot_rarefaction_curves',
+    'assess_sequencing_adequacy',
+    'suggest_rarefaction_depth'
 ]

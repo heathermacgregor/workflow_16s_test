@@ -30,6 +30,84 @@ except ImportError as e:
     
 # ==================================================================================== #
 
+import threading
+import time
+import psutil
+import os
+import logging
+
+class ResourceMonitor:
+    def __init__(self, interval_seconds=300):
+        """
+        Monitor resources every `interval_seconds` (300s = 5 minutes).
+        """
+        self.interval = interval_seconds
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.logger = logging.getLogger("workflow_16s")
+
+    def _get_process_tree_stats(self):
+        """Calculates total resource usage for this script + all child processes."""
+        try:
+            parent = psutil.Process(os.getpid())
+            children = parent.children(recursive=True)
+            
+            # Count total processes (Main + Loky workers + CatBoost wrappers)
+            total_procs = 1 + len(children)
+            
+            # Calculate total RSS memory (Resident Set Size) used by tree
+            total_memory_bytes = parent.memory_info().rss
+            for child in children:
+                try:
+                    total_memory_bytes += child.memory_info().rss
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            
+            total_memory_gb = total_memory_bytes / (1024 ** 3)
+            return total_procs, total_memory_gb, children
+        except Exception:
+            return 0, 0, []
+
+    def _monitor_loop(self):
+        self.logger.info(f"🔍 Resource Monitor started (Interval: {self.interval}s)")
+        
+        while not self.stop_event.is_set():
+            try:
+                # 1. System-wide Stats
+                sys_cpu = psutil.cpu_percent(interval=1) # Measures over 1 second
+                sys_ram = psutil.virtual_memory().percent
+                sys_load = os.getloadavg() # (1min, 5min, 15min)
+                
+                # 2. Pipeline-specific Stats
+                proc_count, pipe_mem_gb, children = self._get_process_tree_stats()
+                
+                # 3. Log Report
+                msg = (
+                    f"\n📊 [RESOURCE MONITOR]\n"
+                    f"   ├── System Load (1/5/15m): {sys_load}\n"
+                    f"   ├── System CPU: {sys_cpu}% | RAM: {sys_ram}%\n"
+                    f"   └── Pipeline Usage:\n"
+                    f"       ├── Active Processes: {proc_count} (1 Main + {proc_count-1} Children)\n"
+                    f"       └── Memory Used: {pipe_mem_gb:.2f} GB"
+                )
+                self.logger.info(msg)
+                
+                # Wait for next interval
+                self.stop_event.wait(self.interval - 1) 
+                
+            except Exception as e:
+                self.logger.error(f"Resource monitor error: {e}")
+                self.stop_event.wait(self.interval)
+
+    def start(self):
+        self.thread.start()
+
+    def stop(self):
+        self.logger.info("Stopping Resource Monitor...")
+        self.stop_event.set()
+        self.thread.join(timeout=2)
+        
+
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
@@ -98,7 +176,9 @@ async def main():
     logger.info(f"Data directory: {args.data_dir}")
     logger.info(f"Output directory: {args.output_dir}")
     logger.info(f"Log file: {log_dir_path}")
-    
+    # 1. INITIALIZE MONITOR (300 seconds = 5 minutes)
+    monitor = ResourceMonitor(interval_seconds=300)
+    monitor.start()
     try:
         # Load configuration
         if args.config:
@@ -133,7 +213,7 @@ async def main():
         else:
             logger.info("NFC facility processing is disabled in config.")
         
-        from workflow_16s.downstream.orchestrator import DownstreamWorkflow
+        from workflow_16s.downstream.workflow import DownstreamWorkflow
         # Initialize and run workflow
         workflow = DownstreamWorkflow(
             data_dir=args.data_dir,
@@ -149,6 +229,8 @@ async def main():
     except Exception as e:
         logger.critical(f"Workflow failed: {e}", exc_info=True)
         sys.exit(1)
+    finally:
+        monitor.stop()
         
 # ==================================================================================== #
 

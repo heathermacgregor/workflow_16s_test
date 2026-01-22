@@ -3,6 +3,9 @@ import pandas as pd
 import plotly.express as px
 from skbio.stats.ordination import rda
 from workflow_16s.downstream.steps.preprocessing import AnalysisUtils
+from workflow_16s.utils.logger import get_logger
+
+logger = get_logger("workflow_16s")
 
 def run_variance_partitioning(adata, level='Genus', plot_dir_stats=None):
     """Quantifies variance attributed to Batch vs Biology."""

@@ -29,9 +29,9 @@ from joblib import Parallel, delayed
 from workflow_16s.utils.logger import get_logger
 from workflow_16s.utils.progress import get_progress_bar
 
-# Use a safe local import or fallback if adata_utils is missing
+# Use a safe local import or fallback if adata_utils functions are missing
 try:
-    from workflow_16s.downstream.adata_utils import fix_adata_dtypes, get_resident_memory_gb
+    from workflow_16s.downstream.utils import fix_adata_dtypes, get_resident_memory_gb
 except ImportError:
     def fix_adata_dtypes(adata): pass
     def get_resident_memory_gb():
@@ -72,6 +72,7 @@ def _sanitize_adata(adata: ad.AnnData) -> ad.AnnData:
     1. Removes columns that conflict with index names.
     2. Forces coordinate columns to float.
     3. Forces object columns to string to prevent HDF5 write errors.
+    4. Strips whitespace from Feature IDs and Taxonomy columns.
     """
     # 1. Fix Observation (Sample) Index Name Conflict
     if adata.obs_names.name is None:
@@ -104,6 +105,26 @@ def _sanitize_adata(adata: ad.AnnData) -> ad.AnnData:
                 df[col] = df[col].astype(str).replace('nan', 'NaN').replace('None', 'NaN')
                 if df[col].nunique() < len(df) * 0.5:
                     df[col] = df[col].astype('category')
+            except Exception: pass
+
+    # A. Strip Feature Index (e.g. ASV IDs or Taxon names used as index)
+    try:
+        adata.var_names = adata.var_names.str.strip()
+    except Exception: pass
+
+    # B. Strip Taxonomy Columns
+    TAX_LEVELS = ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']
+    for col in TAX_LEVELS:
+        if col in adata.var.columns:
+            try:
+                # Handle Categorical Columns (Optimization: rename categories instead of all rows)
+                if pd.api.types.is_categorical_dtype(adata.var[col]):
+                    new_cats = adata.var[col].cat.categories.str.strip()
+                    adata.var[col] = adata.var[col].cat.rename_categories(new_cats)
+                
+                # Handle String/Object Columns
+                elif pd.api.types.is_string_dtype(adata.var[col]) or pd.api.types.is_object_dtype(adata.var[col]):
+                    adata.var[col] = adata.var[col].str.strip()
             except Exception: pass
 
     return adata

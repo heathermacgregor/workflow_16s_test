@@ -9,16 +9,13 @@ microbial community analysis pipeline, including:
 """
 
 from .ingestion import (
-    run_fast_load,
-    run_filter_empty,
-    find_conda_env_by_substring
+    run_fast_load, run_filter_empty, find_conda_env_by_substring
 )
 from .preprocessing import run_preprocessing_pipeline
 from .backfill import run_data_backfill
 from .analysis import run_analysis_suite
 from .synthesis import (
-    run_results_synthesis,
-    handle_strategy_impact_plot
+    run_results_synthesis, handle_strategy_impact_plot
 )
 
 # Import QC functions (optional dependency)
