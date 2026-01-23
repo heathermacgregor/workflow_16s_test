@@ -16,8 +16,10 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import seaborn as sns
+import scipy.sparse
 from scipy.sparse import csc_matrix, csr_matrix, issparse
 import joblib
+from joblib import Parallel, delayed
 
 from workflow_16s.config_schema import AppConfig
 from workflow_16s.utils.logger import get_logger
@@ -83,108 +85,187 @@ def _validate_one_file(f: Path) -> Tuple[str, Union[Path, str]]:
         return (f.name, f"Failed read. Error: {e}")
 
 # --- Core Processing Steps ---
-
-def clean_metadata(adata: ad.AnnData, config: Union[AppConfig, dict]) -> Union[ad.AnnData, None]:
-    """Clean metadata with robust dict/object support."""
-    if isinstance(config, dict):
-        metadata_config = config.get('preprocessing', {}).get('clean_metadata', None)
-    else:
-        metadata_config = getattr(config.preprocessing, 'clean_metadata', None) if hasattr(config, 'preprocessing') else None
-
-    is_enabled = False
-    if isinstance(metadata_config, dict): is_enabled = metadata_config.get('enabled', True)
-    elif hasattr(metadata_config, 'enabled'): is_enabled = metadata_config.enabled
+def _clean_numeric_series(series: pd.Series, col_name: str) -> pd.Series:
+    """
+    Safely attempts to convert a column to numeric.
+    PROTECTIONS:
+    - Skips columns that look like IDs (e.g. contain 'accession', 'id', 'alias').
+    - Skips date columns (handled separately).
+    - Requires >80% valid conversion rate to accept changes.
+    """
+    col_lower = col_name.lower()
     
-    if not is_enabled: return adata
-
-    obs_df = adata.obs.copy()
-
-    # Find text variations of "missing" and converts them to a single numpy NaN
-    missing_variants = [
-        'nan', 'NaN', 'NAN', 'null', 'Null', 'NULL',  # Text variations
-        '', ' ', 'None'                               # Empty strings or python None
+    # 1. SKIP IDENTIFIERS & DATES explicitly
+    # These often contain numbers but should REMAIN strings/objects
+    protected_terms = [
+        'accession', 'alias', 'id', 'name', 'sra', 'project', 'study', 'experiment', 'run', 
+        'sample', 'submission', 'ftp', 'url', 'link', 'md5', 'date', 'created', 'updated', 
+        'time', 'tax_lineage', 'refs', 'publication', 'citation', 'description'
     ]
-    
-    # Mtch the exact string so we don't accidentally replace parts of real words (e.g., 'banana' -> 'ba')
-    obs_df = obs_df.replace(to_replace=missing_variants, value=np.nan)
+    if any(term in col_lower for term in protected_terms):
+        return series
 
-    obs_df, _ = standardize_dates(obs_df)
-    adata.obs = obs_df
+    # 2. Standardize Missing Values
+    missing_indicators = ["nan", "NAN", "NaN", "Null", "null", "None", "none", "", " ", "Missing", "missing", "na", "NA", "unknown"]
+    clean = series.copy().astype(str).str.strip()
+    is_missing = clean.isin(missing_indicators) | clean.isna() | (clean.str.lower() == 'nan')
+    
+    # 3. Try Simple Coercion (e.g., "10.5", "-5")
+    numeric_simple = pd.to_numeric(clean, errors='coerce')
+    
+    non_missing_count = (~is_missing).sum()
+    if non_missing_count == 0:
+        return series # Return original if empty
+
+    valid_simple = (~numeric_simple.isna()).sum()
+    ratio_simple = valid_simple / non_missing_count
+
+    if ratio_simple > 0.90:
+        return numeric_simple
+
+    # 4. Aggressive Cleaning (Units)
+    # Only try this if it's NOT a protected ID column
+    # Regex: Extract first float/int (e.g., "10.5 cm" -> 10.5)
+    numeric_extracted = clean.str.extract(r'^(-?\d+\.?\d*)')[0]
+    numeric_aggressive = pd.to_numeric(numeric_extracted, errors='coerce')
+    
+    valid_aggressive = (~numeric_aggressive.isna()).sum()
+    ratio_aggressive = valid_aggressive / non_missing_count
+
+    # Higher threshold for aggressive cleaning to avoid accidents
+    if ratio_aggressive > 0.85:
+        # LOGGING: Only log if we actually changed non-numeric text to numbers
+        salvaged_mask = numeric_simple.isna() & ~numeric_aggressive.isna() & ~is_missing
+        if salvaged_mask.sum() > 0:
+            examples = series[salvaged_mask].head(3).to_dict()
+            logger.info(f"    🔧 Column '{col_name}': detected units/text mixed with numbers. Converting to numeric.")
+            logger.info(f"       Salvaged {salvaged_mask.sum()} values. Examples: {examples} -> {[numeric_aggressive[i] for i in examples]}")
+            
+        return numeric_aggressive
+
+    return series
+
+def clean_metadata(adata, config=None):
+    """
+    Standardizes metadata: handles missing values, unifies date formats, 
+    and enforces numeric types ONLY for measurement columns.
+    """
+    # 1. Standardize Missing Values (Global)
+    missing_indicators = ["nan", "Null", "null", "None", "none", "", " ", "Unknown", "unknown", "Missing"]
+    adata.obs = adata.obs.replace(missing_indicators, np.nan)
+    
+    # 2. Iterate Columns for Type Inference
+    for col in adata.obs.columns:
+        # Only process object/categorical columns that are NOT already numeric
+        if not pd.api.types.is_numeric_dtype(adata.obs[col]):
+            cleaned_series = _clean_numeric_series(adata.obs[col], col)
+            
+            # Update only if conversion happened
+            if pd.api.types.is_numeric_dtype(cleaned_series):
+                adata.obs[col] = cleaned_series
+
+    # 3. Standardize Dates (Vectorized)
+    # Look for 'date' or 'time' in name, but ignore numeric years (e.g. 2020) if possible
+    date_cols = [c for c in adata.obs.columns if any(x in c.lower() for x in ['date', 'time', 'created', 'updated'])]
+    
+    for col in date_cols:
+        # Skip if already numeric (like 'year' = 2020) unless it's a full timestamp
+        if pd.api.types.is_numeric_dtype(adata.obs[col]):
+             continue
+             
+        try:
+            # Force to datetime -> ISO format
+            adata.obs[col] = pd.to_datetime(adata.obs[col], errors='coerce').dt.strftime('%Y-%m-%d')
+        except Exception:
+            continue
+
     return adata
 
-def _parse_taxonomy_chunk(taxon_series_chunk: pd.Series) -> pd.DataFrame:
-    """Helper to parse a chunk of taxonomy strings."""
-    # Split taxonomy string by semicolon
-    parsed = taxon_series_chunk.astype(str).str.split(';', expand=True)
+def parse_taxonomy(adata):
+    """
+    Parses taxonomy strings into ranks (Kingdom..Species).
+    Handles whitespace, prefixes, and 'unclassified' inheritance logic.
+    """
+    ranks = ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']
     
-    # Ensure we only take up to species (7 levels)
-    num_levels = min(parsed.shape[1], len(TAX_LEVELS))
-    parsed = parsed.iloc[:, :num_levels]
-    parsed.columns = TAX_LEVELS[:num_levels]
-    
-    # Clean up prefixes (d__, p__, etc.) and handle empty values
-    for col in parsed.columns:
-        parsed[col] = parsed[col].str.replace(r'^[dpcofgs]__', '', regex=True).replace(['', 'Unassigned', 'nan'], np.nan).astype('string')
-    
-    return parsed
+    # Identify taxonomy column
+    tax_col = next((c for c in adata.var.columns if c.lower() in ['taxon', 'taxonomy', 'lineage']), None)
+    if not tax_col:
+        for rank in ranks: adata.var[rank] = np.nan
+        return adata
 
-def parse_taxonomy(adata: ad.AnnData) -> Union[ad.AnnData, None]:
-    """
-    Parses 'Taxon' column.
-    FORCED SEQUENTIAL EXECUTION to prevent thread bombs.
-    """
-    if 'Taxon' not in adata.var.columns: return adata
-    
-    taxon_series = adata.var['Taxon']
-    
-    # Execute sequentially
-    parsed_taxonomy = _parse_taxonomy_chunk(taxon_series)
+    try:
+        # 1. Split Taxonomy String
+        tax_df = adata.var[tax_col].astype(str).str.split(';', expand=True)
         
-    cols_to_drop = [lvl for lvl in TAX_LEVELS if lvl in adata.var.columns]
-    if cols_to_drop: adata.var.drop(columns=cols_to_drop, inplace=True)
-    
-    adata.var = pd.concat([adata.var, parsed_taxonomy], axis=1)
-    
+        if tax_df.shape[1] < len(ranks):
+            for i in range(tax_df.shape[1], len(ranks)):
+                tax_df[i] = np.nan
+        
+        tax_df = tax_df.iloc[:, :len(ranks)]
+        tax_df.columns = ranks
+
+        # 2. Vectorized Cleaning
+        for rank in ranks:
+            # Remove prefixes (d__, p__) and strip whitespace
+            tax_df[rank] = tax_df[rank].str.replace(r'^[kpcofgsd]__', '', regex=True).str.strip()
+
+        # 3. Handle 'Unclassified' / Missing Logic
+        bad_values = ['unclassified', 'uncultured', 'ambiguous_taxa', '', 'nan', 'None']
+        mask = tax_df.isin(bad_values) | tax_df.isna()
+        clean_df = tax_df.where(~mask, np.nan)
+        
+        # Forward fill last valid rank
+        filled_df = clean_df.ffill(axis=1)
+        filled_df = filled_df.fillna("Unclassified")
+        
+        # Construct final "Unclassified Rank" strings
+        final_df = clean_df.copy()
+        for col in ranks:
+            fallback = "Unclassified " + filled_df[col]
+            final_df[col] = clean_df[col].combine_first(fallback)
+
+        adata.var[ranks] = final_df[ranks]
+
+    except Exception as e:
+        logger.debug(f"Taxonomy parsing warning: {e}")
+        for rank in ranks:
+            if rank not in adata.var.columns: adata.var[rank] = np.nan
+
     return adata
 
-def filter_samples_and_features(adata: ad.AnnData, config: Union[AppConfig, dict]) -> Union[ad.AnnData, None]:
-    """Filters samples and features, robust to config type."""
-    if isinstance(config, dict):
-        filter_config = config.get('preprocessing', {}).get('filter', {})
-    else:
-        filter_config = getattr(config.preprocessing, 'filter', None)
+def filter_samples_and_features(adata, config=None):
+    """
+    Removes Eukaryota, Mitochondria, Chloroplasts, and empty samples.
+    """
+    if adata.n_obs == 0: return adata
+    
+    to_drop = np.zeros(adata.n_vars, dtype=bool)
 
-    if not get_cfg_value(filter_config, 'enabled', False): return adata
-    
-    sc.settings.verbosity = 0 
-    
-    # 1. Target Gene
-    target_gene_config = get_cfg_value(filter_config, 'target_gene')
-    if get_cfg_value(target_gene_config, 'enabled', False):
-        keep_genes = get_cfg_value(target_gene_config, 'keep_genes', ['16S'])
-        meta_col = get_cfg_value(target_gene_config, 'metadata_column', 'target_gene')
-        if meta_col in adata.obs.columns:
-            adata.obs[meta_col] = adata.obs[meta_col].apply(normalize_target_gene)
-            adata = adata[adata.obs[meta_col].astype(str).isin(keep_genes), :].copy()
-    
-    # 2. Empty Samples
+    # 1. Check for Contaminants
+    if 'Kingdom' in adata.var.columns:
+        is_euk = adata.var['Kingdom'].astype(str).str.contains('Eukaryota|Eukarya', case=False, na=False)
+        to_drop = to_drop | is_euk
+
+    if 'Family' in adata.var.columns:
+        is_mito = adata.var['Family'].astype(str).str.contains('mitochondria', case=False, na=False)
+        to_drop = to_drop | is_mito
+        
+    if 'Order' in adata.var.columns:
+        is_chloro = adata.var['Order'].astype(str).str.contains('chloroplast', case=False, na=False)
+        to_drop = to_drop | is_chloro
+
+    if to_drop.sum() > 0:
+        logger.debug(f"Dropping {to_drop.sum()} features (Eukaryota/Mito/Chloro).")
+        adata = adata[:, ~to_drop].copy()
+
+    # 2. Filter Empty Samples
+    sc.pp.calculate_qc_metrics(adata, inplace=True, percent_top=None, log1p=False)
+    n_pre_samples = adata.n_obs
     sc.pp.filter_cells(adata, min_counts=1)
     
-    # 3. Contaminants
-    contam_terms = get_cfg_value(filter_config, 'contaminant_terms', ['chloroplast', 'mitochondria'])
-    present_cols = [c for c in TAX_LEVELS if c in adata.var.columns]
-    
-    features_to_remove = pd.Series(False, index=adata.var_names)
-    if present_cols:
-        all_taxa = pd.unique(adata.var[present_cols].values.ravel('K')).astype(str)
-        contam_re = re.compile('|'.join(re.escape(t) for t in contam_terms), re.I)
-        bad_taxa = set(t for t in all_taxa if contam_re.search(t))
-        if bad_taxa:
-            features_to_remove = adata.var[present_cols].isin(bad_taxa).any(axis=1)
-            
-    if features_to_remove.any():
-        adata = adata[:, ~features_to_remove].copy()
-        if issparse(adata.X): adata.X = csr_matrix(adata.X)
+    if n_pre_samples - adata.n_obs > 0:
+        logger.debug(f"Dropped {n_pre_samples - adata.n_obs} empty samples.")
 
     return adata
 
@@ -243,39 +324,79 @@ def export_fasta(adata: ad.AnnData, config: Union[AppConfig, dict], output_dir: 
 # --- Utilities Class ---
 class AnalysisUtils:
     TAX_LEVELS_ALL = ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']
-
     @staticmethod
-    def aggregate_adata_by_taxonomy(adata_in: ad.AnnData, tax_level: str = 'Genus') -> Optional[ad.AnnData]:
-        if tax_level not in adata_in.var.columns: return None
-        
-        # --- FIX: THE NUCLEAR OPTION (Fixes "Cannot setitem") ---
-        # 1. Force convert to Object (removes Categorical constraints)
-        # 2. Fill NaNs
-        # 3. Convert to String
-        groups = adata_in.var[tax_level].astype(object).fillna('Unassigned').astype(str)
-        
-        # Create group mapping
-        group_map = pd.get_dummies(groups)
-        
-        X = adata_in.X if not issparse(adata_in.X) else adata_in.X.toarray()
-        agg_X = X @ group_map.values
-        
-        new_adata = ad.AnnData(agg_X, obs=adata_in.obs.copy())
-        new_adata.var_names = group_map.columns
-        new_adata.var.index.name = tax_level
-        if issparse(adata_in.X): new_adata.X = csr_matrix(new_adata.X)
-        
-        # --- FIX: Ensure raw_counts layer is populated in aggregated object ---
-        new_adata.layers['raw_counts'] = new_adata.X.copy()
-        
-        return new_adata
-
+    def _aggregate_chunk(chunk_X, chunk_taxa, level):
+        """Helper to aggregate a subset of the data."""
+        # Create small DF for this chunk
+        df = pd.DataFrame(chunk_X, columns=chunk_taxa)
+        # Group by taxonomy level and sum
+        return df.groupby(level, axis=1).sum()
+    
     @staticmethod
-    def get_analysis_adata(adata_in: ad.AnnData, level: str) -> Optional[ad.AnnData]:
-        if level == 'ASV': return adata_in.copy()
-        if level in AnalysisUtils.TAX_LEVELS_ALL: 
-            return AnalysisUtils.aggregate_adata_by_taxonomy(adata_in, tax_level=level)
-        return None
+    def get_analysis_adata(adata: ad.AnnData, level: str = 'Genus', n_jobs: int = -1):
+        """
+        Aggregates counts to a taxonomic level using Parallel Processing.
+        """
+        if level not in adata.var.columns:
+            print(f"Taxonomy level {level} not found.")
+            return None
+
+        # 1. Get Taxonomy Mapping
+        # Fill NaNs with "Unclassified" to prevent dropping data
+        taxa_series = adata.var[level].fillna(f"Unclassified_{level}").astype(str)
+        unique_taxa = taxa_series.unique()
+        
+        # 2. Parallel Aggregation strategy
+        # Instead of converting the huge 32GB matrix to a DataFrame at once (SLOW),
+        # we split the COLUMNS (Features) into chunks based on their taxonomy.
+        
+        # However, a faster way for sparse matrices is using a matrix multiplication approach.
+        # Construct a transformation matrix (Features x Taxa)
+        
+        try:
+            # OPTION A: Matrix Multiplication (Super Fast, Low Memory)
+            # Create a dummy dataframe to get the grouping dummies
+            dummies = pd.get_dummies(taxa_series)
+            
+            # Sparse dot product: (Samples x Features) @ (Features x Taxa) = (Samples x Taxa)
+            # This sums the counts for features belonging to the same taxa
+            if scipy.sparse.issparse(adata.X):
+                X_agg = adata.X @ scipy.sparse.csr_matrix(dummies.values)
+            else:
+                X_agg = adata.X @ dummies.values
+                
+            new_obs = adata.obs.copy()
+            new_var = pd.DataFrame(index=dummies.columns)
+            
+            return ad.AnnData(X=X_agg, obs=new_obs, var=new_var)
+
+        except Exception as e:
+            # Fallback to Parallel implementation if matrix algebra fails (e.g. memory)
+            print(f"Matrix aggregation failed ({e}), switching to Parallel Pandas...")
+            
+            # Split samples into chunks to process in parallel
+            n_samples = adata.n_obs
+            chunk_size = int(np.ceil(n_samples / 20)) # 20 chunks
+            chunks = [range(i, min(i + chunk_size, n_samples)) for i in range(0, n_samples, chunk_size)]
+            
+            # Use data.X directly
+            if scipy.sparse.issparse(adata.X):
+                X_dense = adata.X.todense()
+            else:
+                X_dense = adata.X
+
+            results = Parallel(n_jobs=n_jobs)(
+                delayed(AnalysisUtils._aggregate_chunk)(
+                    X_dense[chunk_idx, :], 
+                    taxa_series, 
+                    level
+                ) for chunk_idx in chunks
+            )
+            
+            # Combine results
+            final_df = pd.concat(results, axis=0)
+            
+            return ad.AnnData(X=final_df.values, obs=adata.obs.copy(), var=pd.DataFrame(index=final_df.columns))
 
     @staticmethod
     def _clr_transform(adata: ad.AnnData, pseudocount: float = 1) -> pd.DataFrame:

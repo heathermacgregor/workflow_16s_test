@@ -27,6 +27,7 @@ import plotly.express as px
 import numpy as np
 from sklearn.neighbors import BallTree
 from sklearn.cluster import DBSCAN
+from scipy.spatial import cKDTree
 
 # Local Imports
 from workflow_16s.api.ena.finder import run_searches_from_dataframe_async
@@ -42,10 +43,10 @@ from workflow_16s.visualization.nfc import (
 )
 
 # --- INTEGRATED SOURCES ---
-from workflow_16s.api.nuclear_fuel_cycle import (
+from . import (
     _dnfsb, _gem, _iaea, _mindat, 
     _nrc, _jrc, _wna, _wikidata,
-    _analogs
+    _analogs, _geocode
 )
 
 # ==================================================================================== #
@@ -197,8 +198,8 @@ def clean_fetched_ena_samples(df: pd.DataFrame) -> pd.DataFrame:
 
     cleaned_df.dropna(subset=['#sampleid', 'lat', 'lon'], inplace=True)
     cleaned_df = cleaned_df[
-        (cleaned_df['lat'] >= -90) & (cleaned_df['lat'] <= 90) &
-        (cleaned_df['lon'] >= -180) & (cleaned_df['lon'] <= 180)
+        (cleaned_df['lat'] >= -90) & (cleaned_df['lat'] <= 90)
+        & (cleaned_df['lon'] >= -180) & (cleaned_df['lon'] <= 180)
     ]
     cleaned_df = cleaned_df[~((cleaned_df['lat'] == 0) & (cleaned_df['lon'] == 0))]
     return cleaned_df.reset_index(drop=True)
@@ -258,6 +259,7 @@ class NFCFacilitiesHandler:
             self.matches_output_path = self.output_dir / f"matches_{self.config.nfc_facilities.distance_threshold_km}km.tsv"
             self.atlas_path = self.output_dir / "nfc_atlas.h5ad"
 
+        self.geocoder = _geocode.GeocodingService(config, self.output_dir)
         self.nfc_facilities_df = pd.DataFrame()
         self.nearby_samples_df = pd.DataFrame()
 
@@ -276,8 +278,78 @@ class NFCFacilitiesHandler:
         if self.project_dir:
             self.nfc_facilities_df.to_csv(self.facilities_path, sep='\t', index=False)
             logger.info(f"Saved master facility database ({len(self.nfc_facilities_df)} sites) to {self.facilities_path}")
-
+            self.plot_global_facilities_map()
         return self.nfc_facilities_df
+
+    async def match_samples(self, adata, distance_threshold_km: float = 25.0):
+        """
+        Matches biological samples to nearest facilities with strict definitions:
+        - facility_match: Nuclear Facilities ONLY
+        - analog_match:   Analog Facilities ONLY
+        - industry_match: ANY Facility (Nuclear or Analog)
+        """
+        if self.nfc_facilities_df.empty:
+            await self.nfc_facilities()
+        
+        facilities_df = self.nfc_facilities_df
+        if facilities_df.empty:
+            logger.warning("No facilities found. Skipping matching.")
+            return
+
+        valid_facilities = facilities_df.dropna(subset=['lat', 'lon']).copy()
+        if valid_facilities.empty: return
+
+        # Build Tree
+        tree = cKDTree(valid_facilities[['lat', 'lon']].values)
+        
+        # Get Sample Coordinates
+        lat_col = next((c for c in adata.obs.columns if c.lower() in ['latitude', 'lat']), None)
+        lon_col = next((c for c in adata.obs.columns if c.lower() in ['longitude', 'lon']), None)
+        
+        if not lat_col or not lon_col:
+            logger.warning("Sample coordinates missing in adata.obs.")
+            return
+            
+        sample_coords = adata.obs[[lat_col, lon_col]].fillna(0).values
+        distances, indices = tree.query(sample_coords, k=1)
+        distances_km = distances * 111.0 
+        
+        # --- DEFINITIONS ---
+        # 1. Industry Match (Any Facility within range)
+        is_industry = distances_km <= distance_threshold_km
+        
+        # 2. Check Type of Nearest Facility
+        # Get the 'is_nuclear' status of the nearest neighbor for every sample
+        nearest_is_nuclear = valid_facilities.iloc[indices]['is_nuclear'].values
+        
+        # 3. Apply Logic
+        adata.obs['industry_match'] = is_industry
+        adata.obs['facility_match'] = is_industry & nearest_is_nuclear       # Nuclear Only
+        adata.obs['analog_match'] = is_industry & (~nearest_is_nuclear)      # Analog Only
+        
+        adata.obs['facility_distance_km'] = np.nan
+        adata.obs.loc[is_industry, 'facility_distance_km'] = distances_km[is_industry]
+
+        # Map Metadata
+        col_mapping = {
+            'facility': 'facility_name',
+            'facility_type': 'facility_type',
+            'facility_category': 'facility_category',
+            'country': 'facility_country',
+            'data_source': 'facility_source'
+        }
+        
+        # Initialize string columns
+        for out_col in col_mapping.values():
+            adata.obs[out_col] = 'None'
+
+        matched_indices = indices[is_industry]
+        for src_col, dest_col in col_mapping.items():
+            if src_col in valid_facilities.columns:
+                values = valid_facilities.iloc[matched_indices][src_col].values
+                adata.obs.loc[is_industry, dest_col] = values
+
+        logger.info(f"Matched samples: {adata.obs['facility_match'].sum()} Nuclear, {adata.obs['analog_match'].sum()} Analog.")
 
     def annotate_samples(self, samples_df: pd.DataFrame) -> pd.DataFrame:
         """Updates sample metadata with category-specific proximities."""
@@ -301,7 +373,6 @@ class NFCFacilitiesHandler:
             logger.error(f"Data directory {data_dir} does not exist. Cannot build atlas.")
             return None
 
-        # Annotate samples first to ensure we have categories
         annotated_meta = self.annotate_samples(samples_df)
         valid_ids = annotated_meta.index.astype(str).tolist()
         
@@ -347,7 +418,9 @@ class NFCFacilitiesHandler:
 
     @cache_to_file(cache_filename="01_raw_facilities.pkl")
     def _get_data(self) -> pd.DataFrame:
+        """Aggregates data from all loaders and enforces schema standards."""
         logger.info("Aggregating ALL facilities (Nuclear + Analog)...")
+        
         loaders = {
             "dnfsb": lambda: _dnfsb.load_facilities(self.config),
             "mindat": lambda: _mindat.world_uranium_mines(self.config)[self.mindat_columns_to_keep],
@@ -359,35 +432,71 @@ class NFCFacilitiesHandler:
             "wikidata": lambda: _wikidata.Wikidata().load(),
             "analogs": lambda: _analogs.Analogs().load()
         }
+        
         target_dbs = self.config.nfc_facilities.databases or loaders.keys()
         database_dfs = []
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             future_to_name = {}
             for name, loader in loaders.items():
                 if any(name.lower() == d.lower() for d in target_dbs) or name == "analogs":
                     future_to_name[executor.submit(loader)] = name
+            
             for future in concurrent.futures.as_completed(future_to_name):
                 name = future_to_name[future]
                 try:
                     df = future.result()
                     if isinstance(df, pd.DataFrame) and not df.empty:
+                        # [FIX] Normalize Columns Internally
+                        rename_map = {
+                            'Country': 'country', 
+                            'facility_country': 'country',
+                            'Facility': 'facility',
+                            'Facility_Type': 'facility_type',
+                            'Latitude': 'lat', 
+                            'Longitude': 'lon'
+                        }
+                        df.rename(columns=rename_map, inplace=True)
+                        
                         if 'data_source' not in df.columns: 
                             df['data_source'] = name.upper()
                         else: 
                             df['data_source'] = df['data_source'].str.upper()
                         database_dfs.append(df)
-                except: 
-                    pass
+                    else:
+                        logger.warning(f"Loader '{name}' returned empty or invalid data.")
+                except Exception as e: 
+                    logger.error(f"Loader '{name}' failed: {e}")
+        
         if not database_dfs: 
+            logger.warning("No facility data sources loaded successfully.")
             return pd.DataFrame()
+            
         combined = pd.concat(database_dfs, axis=0, ignore_index=True)
+        
+        # [FIX] Enforce Strict Schema
+        required_cols = ['country', 'facility', 'lat', 'lon', 'facility_type']
+        for col in required_cols:
+            if col not in combined.columns:
+                logger.warning(f"Column '{col}' missing from aggregated data. Creating it with NaNs.")
+                combined[col] = np.nan
+        
         if 'is_nuclear' not in combined.columns: 
             combined['is_nuclear'] = True
         combined['is_nuclear'] = combined['is_nuclear'].fillna(True)
+        
         combined['facility_category'] = np.where(combined['is_nuclear'], 'Nuclear Fuel Cycle', 'Contamination Analog')
+        
+        # Clean string columns
         obj_cols = combined.select_dtypes(include="object").columns
         combined[obj_cols] = combined[obj_cols].apply(lambda x: x.astype(str).str.replace(r"\s+", " ", regex=True).str.strip())
-        combined["country"] = combined["country"].replace({"USA": "United States of America", "UK": "United Kingdom"})
+        
+        # [FIX] Safe Country Replacement
+        if 'country' in combined.columns:
+            combined["country"] = combined["country"].replace({"USA": "United States of America", "UK": "United Kingdom"})
+        else:
+            logger.warning("'country' column missing from facility data. Skipping standardization.")
+            
         return combined
 
     def _deduplicate_facilities(self, df: pd.DataFrame, eps_km: float = 2.0) -> pd.DataFrame:
@@ -437,44 +546,32 @@ class NFCFacilitiesHandler:
             df['facility_type_standard'] = df['facility_type'].apply(standardize)
         return df
 
-    async def _fetch_coord(self, session, query: str) -> Tuple[str, Optional[Tuple[float, float]]]:
-        url = "https://nominatim.openstreetmap.org/search"
-        headers = {"User-Agent": self.user_agent}
-        try:
-            async with session.get(url, params={'q': query, 'format': 'json', 'limit': 1}, headers=headers) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    if data: 
-                        return query, (float(data[0]['lat']), float(data[0]['lon']))
-        except: 
-            pass
-        await asyncio.sleep(1.0)
-        return query, (None, None)
-
-    async def _geocode_async(self, queries: list) -> dict:
-        coords = {}
-        async with aiohttp.ClientSession() as session:
-            tasks = [self._fetch_coord(session, q) for q in queries]
-            with get_progress_bar() as progress:
-                tid = progress.add_task("Geocoding...", total=len(tasks))
-                for f in asyncio.as_completed(tasks):
-                    q, res = await f
-                    if res != (None, None): 
-                        coords[q] = res
-                    progress.update(tid, advance=1)
-        return coords
-
     @cache_rows_to_file(cache_filename="02_geocoded_facilities.pkl", id_column="facility")
     async def _geocode(self, df: pd.DataFrame) -> pd.DataFrame:
         if 'lat' not in df.columns: df['lat'] = np.nan
         if 'lon' not in df.columns: df['lon'] = np.nan
-        missing = df[df['lat'].isna() | df['lon'].isna()].copy()
-        if missing.empty: return df
+        missing_mask = (df['lat'].isna()) | (df['lon'].isna()) | (df['lat'] == 0) | (df['lon'] == 0)
+        missing = df[missing_mask].copy()
+        
+        if missing.empty:
+            return df
+            
+        # Create search queries: "Facility Name, Country"
         unique_q = (missing['facility'].fillna('') + ", " + missing['country'].fillna('')).unique().tolist()
+        
         logger.info(f"Geocoding {len(unique_q)} facilities...")
-        coords = await self._geocode_async(unique_q)
-        df.loc[df['lat'].isna(), 'lat'] = (df['facility'] + ", " + df['country']).map(lambda x: coords.get(x, (np.nan, np.nan))[0])
-        df.loc[df['lon'].isna(), 'lon'] = (df['facility'] + ", " + df['country']).map(lambda x: coords.get(x, (np.nan, np.nan))[1])
+        results = await self.geocoder.geocode_batch(unique_q)
+        
+        # Create mapping dictionary
+        coord_map = {q: res for q, res in zip(unique_q, results) if res}
+        
+        # Apply mapping
+        for idx, row in missing.iterrows():
+            query = f"{row['facility']}, {row['country']}"
+            if query in coord_map:
+                df.at[idx, 'lat'] = coord_map[query]['lat']
+                df.at[idx, 'lon'] = coord_map[query]['lon']
+                
         return df
 
     def _multi_view_matching(self, facilities: pd.DataFrame, samples: pd.DataFrame) -> pd.DataFrame:
@@ -483,11 +580,13 @@ class NFCFacilitiesHandler:
         if "original_index" not in samples.columns: samples["original_index"] = samples.index
         if 'lat' not in samples.columns: samples.rename(columns={'latitude_deg': 'lat'}, inplace=True)
         if 'lon' not in samples.columns: samples.rename(columns={'longitude_deg': 'lon'}, inplace=True)
+        
         valid_mask = samples[['lat', 'lon']].notnull().all(axis=1)
         valid_samples = samples[valid_mask].copy()
         if valid_samples.empty: return samples
         s_coords = np.radians(valid_samples[['lat', 'lon']].values)
 
+        # 1. Distance Views (Specific categories)
         views = {
             "dist_nuclear_km":  facilities['is_nuclear'] == True,
             "dist_analog_km":   facilities['is_nuclear'] == False,
@@ -509,12 +608,26 @@ class NFCFacilitiesHandler:
             dists, _ = tree.query(s_coords, k=1)
             valid_samples[col_name] = dists.flatten() * EARTH_RADIUS_KM
 
+        # 2. General Matching (Nearest Neighbor against ALL facilities)
         f_coords_all = np.radians(facilities[['lat', 'lon']].values)
         tree_all = BallTree(f_coords_all, metric='haversine')
         dists_all, idxs_all = tree_all.query(s_coords, k=1)
+        
+        # Distances
         valid_samples['facility_distance_km'] = dists_all.flatten() * EARTH_RADIUS_KM
-        valid_samples['facility'] = facilities.iloc[idxs_all.flatten()]['facility'].values
-        valid_samples['facility_match'] = valid_samples['facility_distance_km'] <= self.config.nfc_facilities.max_distance_km
+        
+        # Nearest Facility Metadata
+        nearest_facs = facilities.iloc[idxs_all.flatten()]
+        valid_samples['facility'] = nearest_facs['facility'].values
+        nearest_is_nuclear = nearest_facs['is_nuclear'].values
+        
+        # 3. Apply New Logic
+        limit = self.config.nfc_facilities.max_distance_km
+        is_industry = valid_samples['facility_distance_km'] <= limit
+        
+        valid_samples['industry_match'] = is_industry
+        valid_samples['facility_match'] = is_industry & nearest_is_nuclear
+        valid_samples['analog_match'] = is_industry & (~nearest_is_nuclear)
         
         merged = pd.merge(valid_samples, facilities.add_suffix('_facility'), left_on='facility', right_on='facility_facility', how='left')
         final_df = pd.concat([merged, samples[~valid_mask]], ignore_index=True)
@@ -635,3 +748,61 @@ class NFCFacilitiesHandler:
         with open(cache_path, 'wb') as f: 
             pickle.dump(accs, f)
         return accs
+    
+    def plot_global_facilities_map(self, output_filename: str = "global_facilities_map.html"):
+        """
+        Generates an interactive Plotly map of ALL aggregated facilities.
+        Colors points by 'facility_category' (Nuclear vs Analog) and shapes by 'facility_type'.
+        """
+        if self.nfc_facilities_df.empty:
+            logger.warning("No facilities to plot.")
+            return
+
+        df = self.nfc_facilities_df.copy()
+        
+        # Ensure we have clean labels for the legend
+        df['Category'] = df['facility_category'].fillna('Unknown')
+        df['Type'] = df['facility_type_standard'].fillna('Other')
+        
+        # Filter out rows with bad coordinates
+        plot_df = df.dropna(subset=['lat', 'lon'])
+        
+        logger.info(f"Generating global map for {len(plot_df)} facilities...")
+
+        try:
+            fig = px.scatter_geo(
+                plot_df,
+                lat='lat',
+                lon='lon',
+                color='Category',
+                symbol='Category',  # Different shapes for Nuclear vs Analog
+                hover_name='facility',
+                hover_data={
+                    'lat': False, 'lon': False, 'Category': False,
+                    'Type': True,
+                    'country': True,
+                    'data_source': True
+                },
+                title=f"Global Nuclear Fuel Cycle & Analog Facilities (n={len(plot_df)})",
+                projection="natural earth",
+                color_discrete_map={
+                    'Nuclear Fuel Cycle': '#d62728',  # Red
+                    'Contamination Analog': '#1f77b4' # Blue
+                }
+            )
+
+            fig.update_geos(
+                showcountries=True, countrycolor="RebeccaPurple",
+                showcoastlines=True, coastlinecolor="RebeccaPurple",
+                showland=True, landcolor="LightGreen",
+                showocean=True, oceancolor="LightBlue"
+            )
+            
+            fig.update_layout(legend_title_text='Facility Class')
+            
+            output_path = self.output_dir / output_filename
+            fig.write_html(str(output_path))
+            logger.info(f"✅ Interactive map saved to: {output_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to plot global facilities map: {e}")

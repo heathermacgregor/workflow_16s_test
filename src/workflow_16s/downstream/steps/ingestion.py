@@ -10,6 +10,7 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
+from typing import Tuple, Optional, List
 import re
 import subprocess
 import hashlib
@@ -41,406 +42,263 @@ except ImportError:
         except: return 0.0
 
 logger = get_logger("workflow_16s")
-
-def log_mem(msg=""):
-    """Helper to log memory usage."""
-    mem = get_resident_memory_gb()
-    logger.info(f"{msg} | Memory usage: {mem:.2f} GB (RES)")
-
-def find_conda_env_by_substring(name_substring, logger):
-    """Search for a Conda environment by partial name match."""
-    try:
-        result = subprocess.run(["conda", "info", "--envs"], capture_output=True, text=True, check=True, encoding='utf-8')
-        env_list = result.stdout.strip().split('\n')
-        env_name_pattern = re.compile(r"^\s*([\w\d\-_]+)\s+")
-        for line in env_list:
-            if line.startswith("#"): continue
-            match = env_name_pattern.match(line)
-            if match:
-                env_name = match.group(1)
-                if name_substring in env_name: return env_name
-        return None
-    except Exception: return None
+# Suppress annoying implicit modification warnings from pandas
+pd.options.mode.chained_assignment = None
 
 def _get_file_hash(filepath: Path) -> str:
-    """Get hash of file for cache key."""
-    return hashlib.md5(f"{filepath.stem}_{filepath.stat().st_mtime}".encode()).hexdigest()[:16]
+    """Fast hash of file stats to detect changes without reading content."""
+    stats = filepath.stat()
+    return hashlib.md5(f"{stats.st_size}_{stats.st_mtime}".encode()).hexdigest()[:8]
+
+def _validate_cached_adata(adata) -> Tuple[bool, str]:
+    """Quick sanity check on cached object."""
+    if adata is None: return False, "None object"
+    if not isinstance(adata, ad.AnnData): return False, "Not AnnData"
+    if adata.n_obs == 0: return False, "Empty observations"
+    return True, ""
 
 def _sanitize_adata(adata: ad.AnnData) -> ad.AnnData:
     """
-    CRITICAL FIX: 
-    1. Removes columns that conflict with index names.
-    2. Forces coordinate columns to float.
-    3. Forces object columns to string to prevent HDF5 write errors.
-    4. Strips whitespace from Feature IDs and Taxonomy columns.
+    Minimal sanitization to ensure merging works. 
+    Does NOT force types aggressively to allow clean_metadata to do its job.
     """
-    # 1. Fix Observation (Sample) Index Name Conflict
-    if adata.obs_names.name is None:
-        adata.obs_names.name = 'sample_id'
-        
-    idx_name = adata.obs_names.name
-    if idx_name in adata.obs.columns:
-        try: del adata.obs[idx_name]
-        except Exception: pass
-
-    # 2. Fix Variable (Feature) Index Name Conflict
-    if adata.var_names.name is None:
-        adata.var_names.name = 'feature_id'
-        
-    var_idx_name = adata.var_names.name
-    if var_idx_name in adata.var.columns:
-        try: del adata.var[var_idx_name]
-        except Exception: pass
-
-    # 3. Force Coordinates to Float
+    # 1. Fix Index Name Conflicts
+    if adata.obs_names.name is None: adata.obs_names.name = 'sample_id'
+    if adata.var_names.name is None: adata.var_names.name = 'feature_id'
+    
+    if not adata.obs.index.is_unique:
+        adata.obs_names_make_unique()
+    # Remove columns that duplicate the index name (prevents HDF5 write errors)
+    for idx_name in [adata.obs_names.name, adata.var_names.name]:
+        if idx_name in adata.obs.columns:
+            try: del adata.obs[idx_name]
+            except: pass
+            
+    # 2. Force Coordinates to Numeric (Critical for Maps)
+    # We do this here because we often need them for spatial queries immediately
     for coord in ['lat', 'lon', 'latitude', 'longitude']:
         if coord in adata.obs.columns:
             adata.obs[coord] = pd.to_numeric(adata.obs[coord], errors='coerce')
 
-    # 4. Force Mixed Object Columns to String
-    for df in [adata.obs, adata.var]:
-        object_cols = df.select_dtypes(include=['object']).columns
-        for col in object_cols:
-            try:
-                df[col] = df[col].astype(str).replace('nan', 'NaN').replace('None', 'NaN')
-                if df[col].nunique() < len(df) * 0.5:
-                    df[col] = df[col].astype('category')
-            except Exception: pass
+    # 3. Strip whitespace from Index (Clean IDs)
+    try: adata.var_names = adata.var_names.str.strip()
+    except: pass
+    try: adata.obs_names = adata.obs_names.str.strip()
+    except: pass
 
-    # A. Strip Feature Index (e.g. ASV IDs or Taxon names used as index)
-    try:
-        adata.var_names = adata.var_names.str.strip()
-    except Exception: pass
-
-    # B. Strip Taxonomy Columns
-    TAX_LEVELS = ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']
-    for col in TAX_LEVELS:
-        if col in adata.var.columns:
-            try:
-                # Handle Categorical Columns (Optimization: rename categories instead of all rows)
-                if pd.api.types.is_categorical_dtype(adata.var[col]):
-                    new_cats = adata.var[col].cat.categories.str.strip()
-                    adata.var[col] = adata.var[col].cat.rename_categories(new_cats)
-                
-                # Handle String/Object Columns
-                elif pd.api.types.is_string_dtype(adata.var[col]) or pd.api.types.is_object_dtype(adata.var[col]):
-                    adata.var[col] = adata.var[col].str.strip()
-            except Exception: pass
+    # NOTE: We removed the "Force Object to String" block.
+    # Allowing clean_metadata to handle type inference is safer.
 
     return adata
 
-def sanitize_and_save_h5ad(adata: ad.AnnData, filepath: Path):
-    """Safe save wrapper that fixes index conflicts before writing."""
-    adata = _sanitize_adata(adata)
-    try:
-        adata.write_h5ad(filepath, compression="gzip")
-    except Exception as e:
-        logger.warning(f"Standard save failed ({e}). Attempting aggressive cleanup...")
-        adata.obs_names.name = None
-        adata.var_names.name = None
-        if 'sample_id' in adata.obs.columns: del adata.obs['sample_id']
-        if 'feature_id' in adata.var.columns: del adata.var['feature_id']
-        adata.write_h5ad(filepath)
-
-def _validate_cached_adata(adata: ad.AnnData, cache_type: str = "file") -> tuple[bool, list[str]]:
-    """Validate cached AnnData object."""
-    issues = []
-    if adata.n_obs == 0: issues.append("No observations")
-    if adata.n_vars == 0: issues.append("No features")
-    return len(issues) == 0, issues
-
-# --- Global Merge Functions ---
-
-def hierarchical_merge(adata_list: list, chunk_size: int = 5) -> ad.AnnData:
-    """Merges a list of AnnData objects in memory. Reduced default chunk size."""
-    if not adata_list: return None
-    TAX_LEVELS = ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']
-    
-    while len(adata_list) > 1:
-        new_list = []
-        log_mem(f"Merging {len(adata_list)} objects (chunk_size={chunk_size})")
-        for i in range(0, len(adata_list), chunk_size):
-            chunk = adata_list[i : i + chunk_size]
-            if len(chunk) == 1:
-                new_list.append(chunk[0])
-            else:
-                try:
-                    # FIX: fill_value=0 ensures outer joins don't introduce NaNs in counts
-                    merged_chunk = ad.concat(chunk, join='outer', merge='same', fill_value=0)
-                    if issparse(merged_chunk.X): merged_chunk.X = csr_matrix(merged_chunk.X)
-                    
-                    # Robust Taxonomy Collection
-                    valid_dfs = []
-                    for obj in chunk:
-                        if not obj.var.empty:
-                            available = [c for c in TAX_LEVELS if c in obj.var.columns]
-                            if available:
-                                valid_dfs.append(obj.var[available])
-                    
-                    if valid_dfs:
-                        combined_taxonomy = pd.concat(valid_dfs)
-                        combined_taxonomy = combined_taxonomy[~combined_taxonomy.index.duplicated(keep='first')]
-                        
-                        for col in TAX_LEVELS:
-                            if col in combined_taxonomy:
-                                # FIX: Update source categories BEFORE reindexing
-                                if pd.api.types.is_categorical_dtype(combined_taxonomy[col]):
-                                    if 'Unassigned' not in combined_taxonomy[col].cat.categories:
-                                        combined_taxonomy[col] = combined_taxonomy[col].cat.add_categories(['Unassigned'])
-                                
-                                merged_chunk.var[col] = combined_taxonomy[col].reindex(merged_chunk.var_names, fill_value='Unassigned')
-
-                    new_list.append(merged_chunk)
-                except Exception as e:
-                    logger.error(f"Merge chunk failed: {e}")
-                    merged_chunk = ad.concat(chunk, join='outer', fill_value=0)
-                    new_list.append(merged_chunk)
-            
-            # Explicitly clear chunk to free memory
-            chunk = None
-            gc.collect()
-            
-        adata_list = new_list
-        gc.collect()
-        
-    return adata_list[0]
-
-def hierarchical_merge_on_disk(h5ad_paths, cache_dir, logger, chunk_size=2):
+def _process_single_file(f: Path, config, cache_dir: Optional[Path] = None):
     """
-    Hierarchically merge AnnData .h5ad files on disk.
-    Forces sparse format to prevent memory explosion.
+    Worker function: Loads, cleans, and sanitizes a single .h5ad file.
+    Handles caching internally.
     """
-    TAX_LEVELS = ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']
-    round_num = 0
-    paths = list(h5ad_paths)
-    
-    while len(paths) > 1:
-        new_paths = []
-        logger.info(f"Disk Merge Round {round_num}: Merging {len(paths)} files...")
-        
-        for i in range(0, len(paths), chunk_size):
-            chunk = paths[i:i+chunk_size]
-            if len(chunk) == 1:
-                new_paths.append(chunk[0])
-                continue
-                
+    # 1. Check Cache
+    if cache_dir:
+        cache_file = cache_dir / f"{f.stem}_{_get_file_hash(f)}.pkl"
+        if cache_file.exists():
             try:
-                adatas = [sc.read_h5ad(p) for p in chunk]
-                # Force sparsity on inputs
-                for obj in adatas:
-                    if not issparse(obj.X): obj.X = csr_matrix(obj.X)
+                with open(cache_file, 'rb') as cf:
+                    cached_adata = pickle.load(cf)
+                is_valid, _ = _validate_cached_adata(cached_adata)
+                if is_valid: 
+                    return cached_adata
+                else: 
+                    cache_file.unlink() # Corrupt cache
+            except Exception:
+                if cache_file.exists(): cache_file.unlink()
 
-                # FIX: fill_value=0 ensures outer joins don't introduce NaNs in counts
-                merged = ad.concat(adatas, join='outer', merge='same', fill_value=0)
-                # Force sparsity on output
-                if not issparse(merged.X): merged.X = csr_matrix(merged.X)
-                
-                # Robust Taxonomy Preservation (Fixes Data Loss & Crash)
-                valid_dfs = []
-                for obj in adatas:
-                    if not obj.var.empty:
-                        available = [c for c in TAX_LEVELS if c in obj.var.columns]
-                        if available:
-                            valid_dfs.append(obj.var[available])
-
-                if valid_dfs:
-                    combined_taxonomy = pd.concat(valid_dfs)
-                    combined_taxonomy = combined_taxonomy[~combined_taxonomy.index.duplicated(keep='first')]
-                    
-                    for col in TAX_LEVELS:
-                        if col in combined_taxonomy:
-                            if pd.api.types.is_categorical_dtype(combined_taxonomy[col]):
-                                if 'Unassigned' not in combined_taxonomy[col].cat.categories:
-                                    combined_taxonomy[col] = combined_taxonomy[col].cat.add_categories(['Unassigned'])
-                            
-                            reindexed_col = combined_taxonomy[col].reindex(merged.var_names, fill_value='Unassigned')
-                            
-                            if col in merged.var and pd.api.types.is_categorical_dtype(merged.var[col]):
-                                if 'Unassigned' not in merged.var[col].cat.categories:
-                                    merged.var[col] = merged.var[col].cat.add_categories(['Unassigned'])
-
-                            merged.var[col] = reindexed_col
-                
-                merged = _sanitize_adata(merged)
-                fix_adata_dtypes(merged)
-                
-                out_path = cache_dir / f"merge_round{round_num}_{i//chunk_size}.h5ad"
-                sanitize_and_save_h5ad(merged, out_path)
-                new_paths.append(out_path)
-                
-                del adatas, merged; gc.collect()
-                
-            except Exception as e:
-                logger.error(f"Failed to merge chunk {chunk}: {e}")
-                raise e
-
-        paths = new_paths
-        round_num += 1
-        
-    return sc.read_h5ad(paths[0])
-
-def _process_single_file(f: Path, config, cache_dir: Path = None):
-    """Process a single h5ad file with threading support."""
-    import gc
-    from workflow_16s.downstream.steps.preprocessing import (
-        clean_metadata, 
-        parse_taxonomy, 
-        filter_samples_and_features
-    )
+    # 2. Load & Process
     try:
-        if cache_dir:
-            cache_file = cache_dir / f"{f.stem}_{_get_file_hash(f)}.pkl"
-            if cache_file.exists():
-                try:
-                    with open(cache_file, 'rb') as cf:
-                        cached_adata = pickle.load(cf)
-                    is_valid, _ = _validate_cached_adata(cached_adata)
-                    if is_valid: return (f.stem, cached_adata, None)
-                    else: cache_file.unlink()
-                except Exception:
-                    if cache_file.exists(): cache_file.unlink()
-        
         adata = sc.read_h5ad(f)
+        
+        # A. Sanitize (Minimal fixes)
         adata = _sanitize_adata(adata)
+        
+        # B. Clean Metadata (Type inference happens here!)
         adata = clean_metadata(adata, config)
-        if adata is None: return (f.stem, None, "Metadata cleaning failed")
         
-        if 'lat' not in adata.obs.columns: adata.obs['lat'] = np.nan
-        if 'lon' not in adata.obs.columns: adata.obs['lon'] = np.nan
-        for c in ['latitude', 'latitude_deg', 'LAT']:
-            if c in adata.obs.columns:
-                adata.obs[c] = pd.to_numeric(adata.obs[c], errors='coerce')
-                adata.obs['lat'] = adata.obs['lat'].fillna(adata.obs[c])
+        if adata is None: return None
         
+        # C. Parse & Filter
         adata = parse_taxonomy(adata)
-        if adata is not None: 
-            adata = filter_samples_and_features(adata, config)
+        adata = filter_samples_and_features(adata, config)
         
         if adata is None or adata.n_obs == 0:
-            return (f.stem, None, "No observations after filtering")
-        
-        if cache_dir:
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            cache_file = cache_dir / f"{f.stem}_{_get_file_hash(f)}.pkl"
-            try:
-                with open(cache_file, 'wb') as cf: pickle.dump(adata, cf, protocol=4)
-            except: pass
+            return None
             
-        return (f.stem, adata, None)
+        # D. Type Fixing (Final check for HDF5 compatibility)
+        fix_adata_dtypes(adata)
+        
+        # 3. Save to Cache
+        if cache_dir:
+            try:
+                with open(cache_file, 'wb') as cf: 
+                    pickle.dump(adata, cf, protocol=4)
+            except Exception as e:
+                logger.warning(f"Failed to cache {f.name}: {e}")
+
+        return adata
+        
     except Exception as e:
-        return (f.stem, None, str(e))
-    finally:
-        gc.collect()
+        logger.warning(f"Failed to load {f.name}: {e}")
+        return None
+
+def hierarchical_merge(adatas: List[ad.AnnData]) -> Optional[ad.AnnData]:
+    """Merges a list of AnnData objects using concatenation."""
+    if not adatas: return None
+    try:
+        # Outer join preserves features present in ANY dataset
+        merged = ad.concat(
+            adatas, 
+            join="outer", 
+            merge="unique", 
+            uns_merge="unique", 
+            fill_value=0
+        )
+        return merged
+    except Exception as e:
+        logger.error(f"Merge failed: {e}")
+        return None
 
 def run_fast_load(workflow):
-    """Load and preprocess files using Threading (Batch-Mode) with Persistent Caching."""
-    import gc
-    workflow.logger.info("1. Modular Ingestion: Loading and filtering files (THREADING + BATCHED)...")
+    """
+    Main Ingestion Function.
+    """
+    logger.info("--- 1. Data Ingestion & Merging ---")
     
-    # --- 1. CHECK FOR PERSISTENT CACHE ---
-    # Renamed to 'merged_samples.h5ad'
-    final_cache_path = workflow.output_dir / "merged_samples.h5ad"
-    
-    if final_cache_path.exists():
-        workflow.logger.info(f"🚀 Found cached merged dataset at {final_cache_path}. Loading...")
+    # 1. Tier 1 Cache: Check for pre-merged final file
+    final_cache = workflow.output_dir / "merged_samples.h5ad"
+    if workflow.config.ml.load_existing and final_cache.exists():
+        logger.info(f"Loading cached merged data from {final_cache.name}...")
         try:
-            workflow.adata = sc.read_h5ad(final_cache_path)
-            # Basic validation
-            if workflow.adata.n_obs > 0:
-                workflow.logger.info(f"✅ Successfully loaded cached dataset ({workflow.adata.n_obs} samples).")
-                return # EXIT EARLY - SUCCESS
-            else:
-                workflow.logger.warning("Cached dataset was empty. Rebuilding...")
-        except Exception as e:
-             workflow.logger.warning(f"Failed to load cache ({e}). Rebuilding...")
+            workflow.adata = sc.read_h5ad(final_cache)
+            logger.info(f"✅ Loaded {workflow.adata.n_obs} samples.")
+            return
+        except Exception:
+            logger.warning("Cached file corrupt. Reloading from source.")
 
-    # --- 2. BUILD IF NO CACHE ---
-    h5ad_files = list(workflow.data_dir.glob("*.h5ad"))
-    
-    if not h5ad_files:
-        workflow.logger.warning(f"No h5ad files found in {workflow.data_dir}")
+    # 2. Setup Tier 2 Cache (Individual Files)
+    # Define the directory where _process_single_file will save pickles
+    preproc_cache_dir = workflow.output_dir / ".cache" / "preprocessed_files"
+    preproc_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    input_files = list(workflow.data_dir.glob("*.h5ad"))
+    if not input_files:
+        logger.error(f"No .h5ad files found in {workflow.data_dir}")
         return
 
-    cache_dir = workflow.output_dir / ".cache" / "preprocessed_files"
-    concat_cache_dir = workflow.output_dir / ".cache" / "concatenated"
-    
-    n_jobs = min(8, os.cpu_count() or 1)
-    
-    # Reduced batch size to manage memory
-    BATCH_SIZE = 10
-    total_files = len(h5ad_files)
-    chunk_files = []
-    
-    config_dict = workflow.config.model_dump() if hasattr(workflow.config, 'model_dump') else workflow.config
+    logger.info(f"Found {len(input_files)} datasets. Starting parallel ingest...")
 
-    with Parallel(n_jobs=n_jobs, backend='threading', verbose=5) as parallel:
-        for i in range(0, total_files, BATCH_SIZE):
-            batch_files = h5ad_files[i : i + BATCH_SIZE]
-            batch_num = (i // BATCH_SIZE) + 1
-            
-            workflow.logger.info(f"--- Processing Batch {batch_num} ({len(batch_files)} files) ---")
-            
-            batch_id = hashlib.md5("_".join(sorted([f.name for f in batch_files])).encode()).hexdigest()[:8]
-            batch_cache_path = concat_cache_dir / f"batch_{batch_num}_{batch_id}.h5ad"
-            
-            if batch_cache_path.exists():
-                workflow.logger.info(f"✅ Found cached batch: {batch_cache_path.name}")
-                chunk_files.append(batch_cache_path)
-                continue
-
-            results = parallel(
-                delayed(_process_single_file)(f, config_dict, cache_dir)
-                for f in batch_files
-            )
-            
-            valid_batch_adatas = []
-            for f, (stem, adata, error) in zip(batch_files, results):
-                if adata is not None: valid_batch_adatas.append(adata)
-                elif error: workflow.logger.warning(f"Skipping {stem}: {error}")
-            
-            if valid_batch_adatas:
-                workflow.logger.info(f"Concatenating batch {batch_num}...")
-                log_mem("Before batch merge")
-                # Fill value 0 prevents NaNs in counts
-                batch_adata = hierarchical_merge(valid_batch_adatas, chunk_size=5)
-                batch_cache_path.parent.mkdir(parents=True, exist_ok=True)
-                sanitize_and_save_h5ad(batch_adata, batch_cache_path)
-                chunk_files.append(batch_cache_path)
-                workflow.logger.info(f"💾 Saved intermediate batch to {batch_cache_path.name}")
-            
-            # Explicit cleanup
-            del valid_batch_adatas
-            del results
-            gc.collect()
-
-    if not chunk_files:
-        workflow.logger.warning("No files were successfully processed.")
-        return
-
-    workflow.logger.info(f"Merging {len(chunk_files)} batch files on disk...")
-    # Use disk-based hierarchical merge for final step
-    workflow.adata = hierarchical_merge_on_disk(chunk_files, concat_cache_dir, workflow.logger, chunk_size=2)
+    # 3. Parallel Loading
+    batch_size = 10
+    all_adatas = []
+    chunks = [input_files[i:i + batch_size] for i in range(0, len(input_files), batch_size)]
     
-    if workflow.adata is not None:
-        workflow.adata = _sanitize_adata(workflow.adata)
-        tax_levels = ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']
-        missing_tax = [lvl for lvl in tax_levels if lvl not in workflow.adata.var.columns]
-        if missing_tax: workflow.logger.warning(f"Missing taxonomy columns: {missing_tax}")
-        else: workflow.logger.info(f"✅ All taxonomy columns present")
+    for i, chunk in enumerate(chunks):
+        # PASS cache_dir TO THE WORKER
+        processed_chunk = Parallel(n_jobs=workflow.n_cpus)(
+            delayed(_process_single_file)(
+                f, 
+                workflow.config, 
+                cache_dir=preproc_cache_dir  # <--- HERE IS THE FIX
+            ) for f in chunk
+        )
         
-        # Ensure we have valid data
-        if issparse(workflow.adata.X):
-            # Fill NaNs in sparse matrix if any exist (rare but possible after concat)
-            workflow.adata.X.data = np.nan_to_num(workflow.adata.X.data, nan=0.0)
-        else:
-            workflow.adata.X = np.nan_to_num(workflow.adata.X, nan=0.0)
+        valid_adatas = [a for a in processed_chunk if a is not None]
+        
+        if valid_adatas:
+            chunk_merged = hierarchical_merge(valid_adatas)
+            if chunk_merged: all_adatas.append(chunk_merged)
             
-        # --- 3. SAVE FINAL CACHE ---
-        workflow.logger.info(f"💾 Saving final merged dataset to {final_cache_path}...")
-        sanitize_and_save_h5ad(workflow.adata, final_cache_path)
-        workflow.logger.info("✅ Merged dataset saved.")
+            del valid_adatas
+            del processed_chunk
+            gc.collect()
+            
+        logger.info(f"Processed batch {i+1}/{len(chunks)} ({len(chunk)} files)")
 
-def run_filter_empty(workflow, col='facility_match'):
-    if workflow.adata is not None and col in workflow.adata.obs.columns:
-        mask = workflow.adata.obs[col].isin([True, False])
-        workflow.adata = workflow.adata[mask, :].copy()
+    # 4. Final Merge
+    if all_adatas:
+        logger.info("Performing final merge...")
+        final_adata = hierarchical_merge(all_adatas)
+        if final_adata:
+            final_adata.write_h5ad(final_cache)
+            workflow.adata = final_adata
+            logger.info(f"✅ Ingestion Complete: {final_adata.n_obs} samples.")
+        else:
+            logger.error("Final merge failed.")
+    else:
+        logger.error("No valid data loaded.")
+
+def run_filter_empty(workflow):
+    """
+    Final Post-Ingestion cleanup.
+    Ensures no empty samples or zero-count features remain after the merge.
+    """
+    logger.info("--- Post-Ingestion Filtering ---")
+    if workflow.adata is None: 
+        return
+
+    n_samples_pre = workflow.adata.n_obs
+    n_features_pre = workflow.adata.n_vars
+
+    # 1. Filter Empty Samples (rows with 0 counts)
+    # This might happen if a sample passed pre-filtering but lost all features 
+    # during a merge (unlikely with outer join, but good safety)
+    sc.pp.filter_cells(workflow.adata, min_counts=1)
+
+    # 2. Filter Empty Features (cols with 0 counts across ALL samples)
+    # This is common if features were filtered out in some batches but 
+    # the union kept the column name with all zeros.
+    sc.pp.filter_genes(workflow.adata, min_cells=1)
+
+    n_samples_post = workflow.adata.n_obs
+    n_features_post = workflow.adata.n_vars
+
+    if n_samples_pre != n_samples_post:
+        logger.info(f"Removed {n_samples_pre - n_samples_post} empty samples.")
+    
+    if n_features_pre != n_features_post:
+        logger.info(f"Removed {n_features_pre - n_features_post} empty features (not present in any sample).")
+    
+    logger.info(f"Final Data Shape: {n_samples_post} samples x {n_features_post} features.")
+
+def find_conda_env_by_substring(substring: str, logger=None) -> Optional[Path]:
+    """
+    Locates a conda environment path by searching for a substring (e.g., 'picrust2').
+    Used to auto-discover external tool environments.
+    """
+    import subprocess
+    import sys
+    
+    try:
+        # Run 'conda env list' to get all environments
+        # We use check_output to capture stdout
+        result = subprocess.check_output(["conda", "env", "list"], text=True)
+        
+        for line in result.splitlines():
+            # Skip comments
+            if line.startswith("#") or not line.strip(): 
+                continue
+                
+            # Parse line: "env_name   * /path/to/env"
+            parts = line.split()
+            if len(parts) >= 1:
+                # Path is typically the last element
+                env_path = parts[-1] 
+                
+                # Check if the path or name matches our substring
+                if substring in env_path or (len(parts) > 1 and substring in parts[0]):
+                    if logger: 
+                        logger.info(f"Found conda env for '{substring}': {env_path}")
+                    return Path(env_path)
+                    
+        return None
+        
+    except Exception as e:
+        if logger: 
+            logger.warning(f"Could not query conda environments to find '{substring}': {e}")
+        return None

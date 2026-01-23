@@ -11,7 +11,7 @@ from workflow_16s.downstream.diversity import (
 from workflow_16s.downstream.machine_learning import (
     run_machine_learning_analysis, run_catboost_selection
 )
-from workflow_16s.downstream.steps.preprocessing import AnalysisUtils
+from workflow_16s.downstream.utils import AnalysisUtils
 from workflow_16s.downstream.steps.synthesis import handle_strategy_impact_plot
 from workflow_16s.downstream.diversity.phylogenetic import phylogenetic_diversity_workflow
 from workflow_16s.downstream.statistics import compare_da_methods, consensus_da_features
@@ -107,7 +107,30 @@ def run_analysis_suite(workflow):
             )
     except Exception as e:
         workflow.logger.warning(f"Metadata profiling failed: {e}")
+    # Check counts
+    # ... inside run_analysis_suite ...
+
+    # Check counts (Validation Logic)
+    # Use .info() and convert the Series to string so it logs readable text
+    workflow.logger.info("--- Facility Match Counts (Nuclear Only) ---")
+    workflow.logger.info("\n" + str(workflow.adata.obs['facility_match'].value_counts()))
     
+    workflow.logger.info("--- Industry Match Counts (Any Facility) ---")
+    workflow.logger.info("\n" + str(workflow.adata.obs['industry_match'].value_counts()))
+
+    # Verify logic: No sample should be BOTH 'facility_match' (Nuclear) AND 'analog_match'
+    overlaps = workflow.adata.obs[
+        workflow.adata.obs['facility_match'] & workflow.adata.obs['analog_match']
+    ]
+    
+    if len(overlaps) > 0:
+        workflow.logger.error(f"CRITICAL LOGIC ERROR: {len(overlaps)} samples are marked as BOTH Nuclear and Analog!")
+    else:
+        workflow.logger.info("Logic Check Passed: No overlaps between Nuclear and Analog assignments.")
+
+    # Verify logic: No sample should be BOTH 'facility_match' (Nuclear) AND 'analog_match'
+    overlaps = workflow.adata.obs[workflow.adata.obs['facility_match'] & workflow.adata.obs['analog_match']]
+    assert len(overlaps) == 0, "Error: Samples marked as both Nuclear and Analog!"
     tree_file = workflow.output_dir / "all_features.tree"
     tree_path = tree_file if tree_file.exists() else None
     
@@ -120,7 +143,7 @@ def run_analysis_suite(workflow):
         workflow.logger.info("Phylogenetic diversity enabled but no tree file found")
         workflow.logger.info("Attempting to handle missing tree...")
         
-        from workflow_16s.downstream.tree_handler import handle_missing_tree
+        from workflow_16s.downstream.utils import handle_missing_tree
         
         # Get strategy from config or use auto
         tree_strategy = getattr(phylo_config, 'missing_tree_strategy', 'auto')
@@ -245,96 +268,119 @@ def run_analysis_suite(workflow):
     
     # 5. Machine Learning Matrix Execution
     ml_config = getattr(workflow.config, 'ml', None)
-    # 5. Machine Learning Matrix Execution
-    ml_config = getattr(workflow.config, 'ml', None)
     
     if ml_config and ml_config.enabled:
-        # 1. Get Grid Settings (with defaults)
+        # 1. Get Grid Settings
         grid = getattr(ml_config, 'grid_settings', None)
         levels = getattr(grid, 'levels', ["Genus"]) if grid else ["Genus"]
         transforms = getattr(grid, 'transformations', ["clr"]) if grid else ["clr"]
-        
-        # Get strategies to run
-        fs_strategies = getattr(grid, 'fs_strategies', ["baseline", "agnostic", "group_validated"]) if grid else ["baseline", "agnostic", "group_validated"]
+        fs_strategies = getattr(grid, 'fs_strategies', ["baseline"]) if grid else ["baseline"]
         
         # 2. Get Targets
         strict_targets = ml_config.strict_targets
         config_targets = ml_config.targets
         
         if strict_targets and config_targets:
-            workflow.logger.info(f"✓ Strict ML targets enabled. Using list from config: {config_targets}")
             targets = config_targets
         else:
-            targets = ['facility_match', 'facility_distance_km'] # Default fallback
+            targets = ['facility_match', 'facility_distance_km']
 
-        # 3. Determine run context
-        run_context = getattr(workflow, 'run_context', None) or getattr(workflow, 'qc_state', None) or 'default_run'
+        # 3. Setup Caching Directory
+        # We store intermediate files here to avoid re-aggregating 32GB of data
+        cache_dir = workflow.output_dir / ".cache" / "intermediate_data"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        run_context = getattr(workflow, 'run_context', None) or 'default_run'
         
         workflow.logger.info(f"🚀 Starting ML Matrix: {len(levels)} Levels x {len(transforms)} Transforms x {len(targets)} Targets")
 
         # --- MATRIX LOOP ---
         for lvl in levels:
-            for trans in transforms:
-                
-                # A. Prepare Data ONCE for this Level/Transform combo
-                workflow.logger.info(f"📋 Preparing Data: Level={lvl}, Transform={trans}")
-                
-                # Aggregation
+            # --- CACHE TIER 1: AGGREGATION (The Slow Part) ---
+            agg_cache_path = cache_dir / f"aggregated_{lvl}.h5ad"
+            adata_lvl = None
+            
+            if agg_cache_path.exists():
+                workflow.logger.info(f"⚡ Loading cached aggregation for {lvl}...")
+                try:
+                    adata_lvl = sc.read_h5ad(agg_cache_path)
+                except Exception as e:
+                    workflow.logger.warning(f"Failed to load cached aggregation: {e}")
+            
+            if adata_lvl is None:
+                workflow.logger.info(f"🔨 Aggregating data to {lvl} (this may take time)...")
                 adata_lvl = AnalysisUtils.get_analysis_adata(workflow.adata, level=lvl)
-                if adata_lvl is None: 
-                    workflow.logger.warning(f"Skipping level {lvl}: aggregation failed or empty.")
-                    continue
                 
-                # Transformation
-                X_transformed = AnalysisUtils.apply_transform(adata_lvl, method=trans)
+                if adata_lvl is not None:
+                    try:
+                        adata_lvl.write_h5ad(agg_cache_path)
+                        workflow.logger.info(f"💾 Cached aggregation to {agg_cache_path.name}")
+                    except Exception as e:
+                        workflow.logger.warning(f"Could not cache aggregation: {e}")
+            
+            if adata_lvl is None: 
+                workflow.logger.warning(f"Skipping level {lvl}: aggregation failed.")
+                continue
+
+            for trans in transforms:
+                # --- CACHE TIER 2: TRANSFORMATION (The Fast Part) ---
+                trans_cache_path = cache_dir / f"transformed_{lvl}_{trans}.pkl"
+                X_transformed = None
+                
+                if trans_cache_path.exists():
+                    workflow.logger.info(f"  ⚡ Loading cached {trans} transform...")
+                    try:
+                        X_transformed = pd.read_pickle(trans_cache_path)
+                    except Exception:
+                        pass
+                
+                if X_transformed is None:
+                    workflow.logger.info(f"  ⚗️  Applying {trans} transform...")
+                    X_transformed = AnalysisUtils.apply_transform(adata_lvl, method=trans)
+                    try:
+                        X_transformed.to_pickle(trans_cache_path)
+                    except Exception: pass
                 
                 # Define Output Path context
-                # Structure: outputs/machine_learning/Genus/clr/
                 context_path = f"{lvl}/{trans}"
                 
                 for target in targets:
                     
                     # B. Run Feature Selection (CatBoost)
-                    # Output: outputs/catboost/Genus/clr/strategy/target/
                     catboost_base = workflow.catboost_output_dir / lvl / trans
                     catboost_base.mkdir(parents=True, exist_ok=True)
                     
-                    # --- [UPDATED CALL: run_catboost_selection] ---
                     run_catboost_selection(
-                        adata=workflow.adata,       # Original adata for metadata
-                        X_custom=X_transformed,     # Pre-transformed features
+                        adata=workflow.adata,       
+                        X_custom=X_transformed,     
                         catboost_output_dir=catboost_base,
                         level=lvl,
                         priority_targets=[target],
-                        strict_targets=True,        # We handle target looping here, so force strict
-                        strategies=fs_strategies,   # Configured strategies
+                        strict_targets=True,        
+                        strategies=fs_strategies,   
                         n_cpus=workflow.n_cpus,
-                        batch_col='batch_original', # Fallback handled inside function
+                        batch_col='batch_original', 
                         run_context=run_context
                     )
                     
                     # C. Run Main ML Analysis (RandomForest / CatBoost)
-                    # Output: outputs/machine_learning/Genus/clr/
                     ml_out = workflow.plot_dir_ml / lvl / trans
                     ml_out.mkdir(parents=True, exist_ok=True)
                     
-                    # Configure batch settings for this run context
                     batch_cfg = ml_config.batch_covariates.dict() if ml_config.batch_covariates else {}
-                    batch_cfg['output_subdir'] = context_path # Helper for file naming
+                    batch_cfg['output_subdir'] = context_path 
                     
-                    # --- [UPDATED CALL: run_machine_learning_analysis] ---
                     run_machine_learning_analysis(
-                        adata=workflow.adata,       # Original adata for metadata
-                        X_custom=X_transformed,     # Pre-transformed features
+                        adata=workflow.adata,       
+                        X_custom=X_transformed,     
                         plot_dir_ml=ml_out,
                         level=lvl,
                         priority_targets=[target],
-                        strict_targets=True,        # We handle target looping here
+                        strict_targets=True,        
                         batch_config=batch_cfg,
-                        ml_config=ml_config         # Pass full config for model toggles
+                        ml_config=ml_config         
                     )
 
-        # Update global priority vars to match ML targets (for downstream plotting)
         workflow.priority_vars = targets
         workflow.logger.info("✅ ML Matrix Execution Complete.")
     

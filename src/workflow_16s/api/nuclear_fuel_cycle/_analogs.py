@@ -52,62 +52,114 @@ class Analogs:
     """
 
     def load(self) -> pd.DataFrame:
-        logger.info("Querying Wikidata for expanded Analog sites (Mines, Fertilizers, Desalination, etc.)...")
-        try:
-            response = requests.get(
-                self.SPARQL_ENDPOINT, 
-                params={'format': 'json', 'query': self.QUERY},
-                headers={'User-Agent': 'Workflow16S/1.0 (Research)'}
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            rows = []
-            for item in data['results']['bindings']:
-                # Parse Coordinates
-                wkt = item.get('coord', {}).get('value', '')
-                lat, lon = None, None
-                if 'Point(' in wkt:
-                    try:
-                        parts = wkt.replace('Point(', '').replace(')', '').split()
-                        lon, lat = float(parts[0]), float(parts[1])
-                    except: pass
+        logger.info("Querying Wikidata for expanded Analog sites (Splitting queries to avoid timeout)...")
+        
+        expected_cols = [
+            'facility', 'facility_type', 'facility_status', 'country', 
+            'lat', 'lon', 'data_source', 'is_nuclear'
+        ]
 
-                # Granular Categorization
-                raw_type = item.get('typeLabel', {}).get('value', 'Unknown').lower()
-                facility_type = "Analog - Industrial"
-                
-                if "superfund" in raw_type:     facility_type = "Analog - Superfund Site"
-                elif "coal" in raw_type:        facility_type = "Analog - Coal Power (NORM)"
-                elif "rare" in raw_type:        facility_type = "Analog - Rare Earth Mine"
-                elif "phosphate" in raw_type:   facility_type = "Analog - Phosphate Mine"
-                elif "potash" in raw_type:      facility_type = "Analog - Potash Mine"
-                elif "fertilizer" in raw_type:  facility_type = "Analog - Fertilizer Plant"
-                elif "gold" in raw_type:        facility_type = "Analog - Gold Mine"
-                elif "copper" in raw_type:      facility_type = "Analog - Copper Mine"
-                elif "aluminium" in raw_type:   facility_type = "Analog - Aluminium Smelter"
-                elif "desalination" in raw_type: facility_type = "Analog - Desalination Plant"
-                elif "geothermal" in raw_type:  facility_type = "Analog - Geothermal Plant"
-                elif "oil" in raw_type:         facility_type = "Analog - Oil Platform (NORM)"
+        target_types = [
+            ("wd:Q15070265", "Analog - Gold Mine"),
+            ("wd:Q21075778", "Analog - Rare Earth Mine"),
+            ("wd:Q13360639", "Analog - Phosphate Mine"),
+            ("wd:Q1062633",  "Analog - Potash Mine"),
+            ("wd:Q1130068",  "Analog - In-situ Leach Mine"),
+            ("wd:Q162607",   "Analog - Coal Power (NORM)"),
+            ("wd:Q953606",   "Analog - Fertilizer Plant"),
+            ("wd:Q1056562",  "Analog - Aluminium Smelter"),
+            ("wd:Q689745",   "Analog - Desalination Plant"),
+            ("wd:Q1955586",  "Analog - Underground Mine"),
+            ("wd:Q1063637",  "Analog - Open Pit Mine"),
+            ("wd:Q1122672",  "Analog - Industrial Mine"), 
+        ]
+        
+        url = "https://query.wikidata.org/sparql"
+        headers = {'User-Agent': 'Workflow16S/1.0 (Research)'}
+        all_rows = []
+        
+        import requests
+        import time
 
-                rows.append({
-                    'facility': item.get('itemLabel', {}).get('value'),
-                    'facility_type': facility_type,
-                    'facility_status': 'Unknown', 
-                    'country': item.get('countryLabel', {}).get('value'),
-                    'lat': lat,
-                    'lon': lon,
-                    'data_source': 'WIKIDATA_ANALOG',
-                    'is_nuclear': False 
-                })
+        for qid, type_label in target_types:
+            # [FIX] Added PREFIXES to ensure the query is valid
+            query = f"""
+            PREFIX wd: <http://www.wikidata.org/entity/>
+            PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+            PREFIX wikibase: <http://wikiba.se/ontology#>
+            PREFIX bd: <http://www.bigdata.com/rdf#>
             
-            df = pd.DataFrame(rows)
-            if not df.empty:
-                df = df[~df['facility'].str.match(r'^Q\d+$')]
-                
-            logger.info(f"Loaded {len(df)} expanded analog sites.")
-            return df
+            SELECT ?item ?itemLabel ?coord ?countryLabel WHERE {{
+              ?item wdt:P31/wdt:P279* {qid} .
+              ?item wdt:P625 ?coord .
+              OPTIONAL {{ ?item wdt:P17 ?country . }}
+              SERVICE wikibase:label {{ bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en". }}
+            }}
+            LIMIT 2000
+            """
             
-        except Exception as e:
-            logger.error(f"Analog sites query failed: {e}")
-            return pd.DataFrame()
+            success = False
+            for attempt in range(3):
+                try:
+                    r = requests.get(url, params={'format': 'json', 'query': query}, headers=headers, timeout=45)
+                    r.raise_for_status()
+                    data = r.json()
+                    
+                    batch_rows = []
+                    for entry in data['results']['bindings']:
+                        try:
+                            coord_raw = entry.get('coord', {}).get('value', '')
+                            lat, lon = None, None
+                            if "Point(" in coord_raw:
+                                parts = coord_raw.replace("Point(", "").replace(")", "").split()
+                                lon, lat = float(parts[0]), float(parts[1])
+
+                            facility_id = entry.get('item', {}).get('value', '')
+                            
+                            batch_rows.append({
+                                'facility': entry.get('itemLabel', {}).get('value', 'Unknown'),
+                                'facility_id': facility_id, 
+                                'facility_type': type_label,
+                                'facility_status': 'Unknown',
+                                'country': entry.get('countryLabel', {}).get('value', None),
+                                'lat': lat, 
+                                'lon': lon,
+                                'data_source': 'WIKIDATA_ANALOG',
+                                'is_nuclear': False
+                            })
+                        except Exception: 
+                            continue
+                            
+                    all_rows.extend(batch_rows)
+                    if len(batch_rows) > 0:
+                        logger.info(f"  + Loaded {len(batch_rows)} items for {type_label}")
+                    success = True
+                    break 
+
+                except Exception as e:
+                    logger.debug(f"  - Attempt {attempt+1} failed for {type_label}: {e}")
+                    time.sleep(2)
+            
+            if not success:
+                logger.warning(f"  ! Skipping {type_label} (No data or timeout).")
+            
+            time.sleep(1)
+
+        df = pd.DataFrame(all_rows)
+        
+        if df.empty:
+            logger.warning("No analog data retrieved from Wikidata.")
+            return pd.DataFrame(columns=expected_cols)
+
+        if 'facility_id' in df.columns:
+            df = df.drop_duplicates(subset=['facility_id'])
+            df = df.drop(columns=['facility_id'])
+
+        for col in expected_cols:
+            if col not in df.columns:
+                df[col] = None
+
+        df = df[~df['facility'].str.match(r'^Q\d+$', na=False)]
+        
+        logger.info(f"Successfully compiled {len(df)} total analog facilities.")
+        return df

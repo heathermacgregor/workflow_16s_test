@@ -4,24 +4,37 @@ Contains static methods for data transformation (CLR), aggregation,
 metadata parsing, and plottable column finding.
 """
 
-import logging
-import anndata as ad
-import pandas as pd
-import numpy as np
 import re
-from typing import Dict, List, Tuple
+import numpy as np
+import pandas as pd
+import anndata as ad
 from scipy import sparse
-from scipy.sparse import spmatrix, csc_matrix, csr_matrix, issparse
-from collections import defaultdict # Added for easier grouping
+from scipy.sparse import csc_matrix, csr_matrix, issparse
+from typing import Dict, List, Tuple, Optional, Union, Any
+from collections import defaultdict
+from workflow_16s.utils.logger import get_logger
 
-logger = logging.getLogger("workflow_16s")
+logger = get_logger("workflow_16s")
 
 class AnalysisUtils:
     """Contains static helper methods for analysis tasks."""
-    ADMIN_NOISE_COLUMNS = {'biosample_insdc_center_name', 'biosample_Insdc_first_public', 'biosample_investigation_type', 'country_facility', 'dataset', 'EnvironmentalHealth_date', 'latitude_osm', 'longitude_osm', 'refs', 'source_url', 'source_version', 'temporal_coverage', 'time', 'unit', 'variable', 'admin', 'batch', 'batch_original', 'sample_id', '#sampleid'}
+    
+    # Columns to exclude from analysis/plotting automatically
+    ADMIN_NOISE_COLUMNS = {
+        'biosample_insdc_center_name', 'biosample_Insdc_first_public', 'biosample_investigation_type', 
+        'country_facility', 'dataset', 'EnvironmentalHealth_date', 'latitude_osm', 'longitude_osm', 
+        'refs', 'source_url', 'source_version', 'temporal_coverage', 'time', 'unit', 'variable', 
+        'admin', 'batch', 'batch_original', 'sample_id', '#sampleid'
+    }
+    
     ADMIN_NOISE_PATTERNS = [re.compile(r'.*_insdc_status$')]
+    
     # Priority columns that should always be included regardless of fullness threshold
-    PRIORITY_COLUMNS = {'facility_match', 'facility_distance_km', 'facility_name', 'facility_type', 'latitude', 'longitude', 'lat', 'lon'}
+    PRIORITY_COLUMNS = {
+        'facility_match', 'facility_distance_km', 'facility_name', 'facility_type', 
+        'latitude', 'longitude', 'lat', 'lon'
+    }
+    
     TAX_LEVELS_ALL = ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']
     
     # CLR transform cache to avoid recomputation
@@ -29,16 +42,31 @@ class AnalysisUtils:
     
     @staticmethod
     def _parse_lat_lon(lat_lon_series: pd.Series) -> Tuple[pd.Series, pd.Series]:
-        if lat_lon_series is None or lat_lon_series.isnull().all(): return pd.Series(dtype='float64'), pd.Series(dtype='float64')
-        regex = r'([\d\.-]+)\s*([NS])?[\s,]+([\d\.-]+)\s*([EW])?'; parsed = lat_lon_series.astype(str).str.extract(regex)
-        if parsed.empty or parsed.isnull().all().all(): return (pd.Series(dtype='float64', index=lat_lon_series.index), pd.Series(dtype='float64', index=lat_lon_series.index))
-        lat = pd.to_numeric(parsed[0], errors='coerce'); lon = pd.to_numeric(parsed[2], errors='coerce')
-        if 1 in parsed.columns: lat[parsed[1].fillna('').str.upper() == 'S'] *= -1
-        if 3 in parsed.columns: lon[parsed[3].fillna('').str.upper() == 'W'] *= -1
-        lat.index = lat_lon_series.index; lon.index = lat_lon_series.index; return lat, lon
+        """Parses various lat/lon string formats into numeric Series."""
+        if lat_lon_series is None or lat_lon_series.isnull().all(): 
+            return pd.Series(dtype='float64'), pd.Series(dtype='float64')
+            
+        regex = r'([\d\.-]+)\s*([NS])?[\s,]+([\d\.-]+)\s*([EW])?'
+        parsed = lat_lon_series.astype(str).str.extract(regex)
+        
+        if parsed.empty or parsed.isnull().all().all(): 
+            return (pd.Series(dtype='float64', index=lat_lon_series.index), 
+                    pd.Series(dtype='float64', index=lat_lon_series.index))
+                    
+        lat = pd.to_numeric(parsed[0], errors='coerce')
+        lon = pd.to_numeric(parsed[2], errors='coerce')
+        
+        if 1 in parsed.columns: 
+            lat[parsed[1].fillna('').str.upper() == 'S'] *= -1
+        if 3 in parsed.columns: 
+            lon[parsed[3].fillna('').str.upper() == 'W'] *= -1
+            
+        lat.index = lat_lon_series.index
+        lon.index = lat_lon_series.index
+        return lat, lon
 
     @staticmethod
-    def get_analysis_adata(adata_in: ad.AnnData, level: str) -> ad.AnnData | None:
+    def get_analysis_adata(adata_in: ad.AnnData, level: str) -> Union[ad.AnnData, None]:
         """
         Gets an AnnData object for a specific analysis level.
         - If level is taxonomic, calls aggregate_adata_by_taxonomy.
@@ -57,44 +85,52 @@ class AnalysisUtils:
                     return None
 
                 # This will hold the (samples x features) data
-                data_for_anndata: pd.DataFrame | csc_matrix | csr_matrix | np.ndarray 
+                data_for_anndata: Union[pd.DataFrame, csc_matrix, csr_matrix, np.ndarray]
 
                 if not isinstance(func_data, pd.DataFrame):
                     # --- BRANCH 1: Data is an array ---
-                    # Assumed (features x samples)
+                    # Assumed (features x samples) or (samples x features)
+                    # We need to guess based on shape
                     logger.debug(f"Converting array data from .obsm['{level}']")
                     
                     if f"{level}_ids" in adata_in.uns: 
                         feature_names = adata_in.uns[f"{level}_ids"]
                     elif hasattr(func_data, 'shape') and func_data.shape is not None and func_data.shape[0] > 0: 
-                        feature_names = [f"{level}_{i}" for i in range(func_data.shape[0])] # type: ignore
+                        # Fallback feature naming
+                        # If shape[1] matches n_obs, likely (features x samples)
+                        if func_data.shape[1] == adata_in.n_obs:
+                             feature_names = [f"{level}_{i}" for i in range(func_data.shape[0])]
+                        else:
+                             feature_names = [f"{level}_{i}" for i in range(func_data.shape[1])]
                     else: 
                         logger.error(f"Cannot determine feature names for {level}")
                         return None
                     
-                    if not hasattr(func_data, 'shape') or func_data.shape is None or func_data.shape[1] != adata_in.n_obs: 
-                        logger.error(f"Shape mismatch for {level}: {getattr(func_data, 'shape', 'no shape')[1] if hasattr(func_data, 'shape') and func_data.shape is not None else 'unknown'} vs adata.n_obs {adata_in.n_obs}") # type: ignore
-                        return None 
-                        
-                    # func_df is (features x samples)
-                    func_df = pd.DataFrame(func_data, index=feature_names, columns=adata_in.obs_names) # type: ignore
-                    logger.debug(f"Converted {level} from array to DataFrame.")
-                    
-                    # Transpose to (samples x features) for AnnData.X
-                    data_for_anndata = func_df.T
+                    # Determine Orientation
+                    if hasattr(func_data, 'shape') and func_data.shape is not None:
+                        if func_data.shape[1] == adata_in.n_obs:
+                             # (Features x Samples) -> Need Transpose
+                             func_df = pd.DataFrame(func_data, index=feature_names, columns=adata_in.obs_names)
+                             data_for_anndata = func_df.T
+                        elif func_data.shape[0] == adata_in.n_obs:
+                             # (Samples x Features) -> Correct
+                             data_for_anndata = func_data
+                        else:
+                            logger.error(f"Shape mismatch for {level}: {func_data.shape} vs adata.n_obs {adata_in.n_obs}")
+                            return None
+                    else:
+                        return None
                 
                 else:
                     # --- BRANCH 2: Data is a DataFrame ---
-                    # Based on the error, it's already (samples x features).
                     logger.debug(f"Using existing DataFrame from .obsm['{level}'].")
                     func_df = func_data.copy()
                     
-                    # Validation check: if rows don't match samples, it's probably (features x samples)
+                    # Validation check: Orientation
                     if func_df.shape[0] != adata_in.n_obs:
                         logger.warning(f"DataFrame in .obsm['{level}'] has {func_df.shape[0]} rows, but adata has {adata_in.n_obs} obs.")
                         logger.warning(f"Attempting to transpose, assuming (features x samples).")
                         
-                        # Check if transposed shape matches
                         if func_df.shape[1] != adata_in.n_obs:
                             logger.error(f"Shape mismatch: DataFrame is {func_df.shape}, adata is {adata_in.n_obs} obs. Cannot orient.")
                             return None
@@ -102,7 +138,6 @@ class AnalysisUtils:
                         data_for_anndata = func_df.T
                     else:
                         # Shape matches (samples x features), use as-is
-                        logger.debug(f"Assuming (samples x features) orientation.")
                         data_for_anndata = func_df
 
                 # Create new AnnData object (now using data_for_anndata)
@@ -111,11 +146,10 @@ class AnalysisUtils:
                 adata_func.var.index.name = level
                 
                 # IMPORTANT: Create the 'raw_counts' layer for downstream functions
-                # Get the underlying values
                 if isinstance(data_for_anndata, pd.DataFrame):
                     counts_values = data_for_anndata.values
                 elif issparse(data_for_anndata):
-                    counts_values = data_for_anndata.toarray() # type: ignore
+                    counts_values = data_for_anndata.toarray()
                 else:
                     counts_values = np.asarray(data_for_anndata)
 
@@ -133,7 +167,6 @@ class AnalysisUtils:
                 return adata_func
             
             except Exception as e: 
-                # The original KeyError will be caught here and logged
                 logger.error(f"Failed to create AnnData from obsm key '{level}': {e}", exc_info=True)
                 return None
         else: 
@@ -141,27 +174,48 @@ class AnalysisUtils:
             return None
         
     @staticmethod
-    def aggregate_adata_by_taxonomy(adata_in: ad.AnnData, tax_level: str = 'Genus') -> ad.AnnData | None:
-        """Aggregates an AnnData object, including boolean function columns using 'any'."""
-        logger.info(f"--- Aggregating AnnData by {tax_level} ---"); adata_copy = adata_in.copy()
-        if tax_level not in adata_copy.var.columns: logger.error(f"Tax level '{tax_level}' not in .var."); return None
+    def aggregate_adata_by_taxonomy(adata_in: ad.AnnData, tax_level: str = 'Genus') -> Union[ad.AnnData, None]:
+        """Aggregates an AnnData object using efficient sparse matrix multiplication."""
+        logger.info(f"--- Aggregating AnnData by {tax_level} ---")
+        adata_copy = adata_in.copy()
+        
+        if tax_level not in adata_copy.var.columns: 
+            logger.error(f"Tax level '{tax_level}' not in .var.")
+            return None
+            
+        # Standardize Taxonomy Column
         if isinstance(adata_copy.var[tax_level].dtype, pd.CategoricalDtype):
-            if 'Unassigned' not in adata_copy.var[tax_level].cat.categories: adata_copy.var[tax_level] = adata_copy.var[tax_level].cat.add_categories('Unassigned')
+            if 'Unassigned' not in adata_copy.var[tax_level].cat.categories: 
+                adata_copy.var[tax_level] = adata_copy.var[tax_level].cat.add_categories('Unassigned')
             adata_copy.var[tax_level] = adata_copy.var[tax_level].fillna('Unassigned')
-        else: adata_copy.var[tax_level] = adata_copy.var[tax_level].astype(str).fillna('Unassigned').replace(['nan', '<NA>', 'None'], 'Unassigned')
-        if 'raw_counts' in adata_copy.layers: counts_mtx = adata_copy.layers['raw_counts']; logger.debug("Using 'raw_counts'.")
-        else: logger.warning("Using '.X' for aggregation."); counts_mtx = adata_copy.X
-        if sparse.issparse(counts_mtx): counts_mtx = counts_mtx.tocsc()  # type: ignore[union-attr]
-        elif hasattr(counts_mtx, 'toarray'): counts_mtx = counts_mtx.toarray() # type: ignore
-        elif not isinstance(counts_mtx, np.ndarray): counts_mtx = np.array(counts_mtx)
+        else: 
+            adata_copy.var[tax_level] = adata_copy.var[tax_level].astype(str).fillna('Unassigned').replace(['nan', '<NA>', 'None'], 'Unassigned')
+            
+        # Get Counts Matrix
+        if 'raw_counts' in adata_copy.layers: 
+            counts_mtx = adata_copy.layers['raw_counts']
+            logger.debug("Using 'raw_counts'.")
+        else: 
+            logger.warning("Using '.X' for aggregation.")
+            counts_mtx = adata_copy.X
+            
+        if sparse.issparse(counts_mtx): 
+            counts_mtx = counts_mtx.tocsc()
+        elif hasattr(counts_mtx, 'toarray'): 
+            counts_mtx = counts_mtx.toarray()
+        elif not isinstance(counts_mtx, np.ndarray): 
+            counts_mtx = np.array(counts_mtx)
+            
         asv_to_tax_map = adata_copy.var[tax_level]
         logger.debug("Creating sparse grouper matrix for aggregation...")
+        
         # 1. Get unique taxa and their indices
         unique_taxa, group_indices = np.unique(asv_to_tax_map, return_inverse=True)
 
         # 2. Create the (n_groups x n_features) grouper matrix
         n_features = adata_copy.n_vars
         n_groups = len(unique_taxa)
+        
         if counts_mtx is not None and hasattr(counts_mtx, 'dtype') and counts_mtx.dtype is not None:
             grouper_dtype = np.dtype(counts_mtx.dtype)
         else:
@@ -176,7 +230,7 @@ class AnalysisUtils:
         #    (n_samples x n_features) @ (n_features x n_groups) = (n_samples x n_groups)
         if not isinstance(counts_mtx, csr_matrix):
             if issparse(counts_mtx):
-                counts_mtx = counts_mtx.tocsr() # type: ignore
+                counts_mtx = counts_mtx.tocsr()
             else:
                 counts_mtx = csr_matrix(counts_mtx)
                 
@@ -186,10 +240,10 @@ class AnalysisUtils:
         # 4. Create the new AnnData
         new_var = pd.DataFrame(index=unique_taxa)
         new_var.index.name = tax_level
+        
         if not isinstance(agg_mtx, csr_matrix):
             agg_mtx = csr_matrix(agg_mtx)
 
-        # This is the key line. It passes obs and var at creation, which is robust.
         adata_new = ad.AnnData(
             agg_mtx, 
             obs=adata_copy.obs.copy(), 
@@ -198,42 +252,63 @@ class AnalysisUtils:
         )
         adata_new.layers['raw_counts'] = csr_matrix(adata_new.X)
         logger.debug(f"Counts aggregation resulted in {adata_new.n_vars} groups.")
-        tax_levels_all = AnalysisUtils.TAX_LEVELS_ALL; levels_to_keep = tax_levels_all[:tax_levels_all.index(tax_level) + 1] if tax_level in tax_levels_all else [tax_level]
+        
+        # 5. Aggregate .var metadata
+        tax_levels_all = AnalysisUtils.TAX_LEVELS_ALL
+        levels_to_keep = tax_levels_all[:tax_levels_all.index(tax_level) + 1] if tax_level in tax_levels_all else [tax_level]
+        
         logger.debug(f"Aggregating .var metadata up to {tax_level}...")
         try:
             var_meta_orig = adata_in.var.copy()
             if tax_level not in var_meta_orig.columns: raise KeyError(f"Column '{tax_level}' not found.")
+            
             var_meta_orig['__group_key__'] = var_meta_orig[tax_level].fillna('Unassigned')
-            agg_funcs = {}; levels_present = [lvl for lvl in levels_to_keep if lvl in var_meta_orig.columns]
-            for lvl in levels_present: agg_funcs[lvl] = lambda series: series.dropna().iloc[0] if not series.dropna().empty else np.nan
-            # Identify function columns by prefix (handle potential absence of prefixes)
-            func_prefixes = ("FAPROTAX_", "CUSTOM_") # Add PICRUSt2 prefix if you add boolean PICRUSt2 cols later
+            agg_funcs = {}
+            levels_present = [lvl for lvl in levels_to_keep if lvl in var_meta_orig.columns]
+            
+            # Default aggregation: take first non-null
+            for lvl in levels_present: 
+                agg_funcs[lvl] = lambda series: series.dropna().iloc[0] if not series.dropna().empty else np.nan
+            
+            # Identify function columns by prefix
+            func_prefixes = ("FAPROTAX_", "CUSTOM_", "PICRUST_") 
             func_cols = [c for c in var_meta_orig.columns if c.startswith(func_prefixes) and var_meta_orig[c].dtype == bool]
-            if func_cols: logger.debug(f"Aggregating {len(func_cols)} function columns using 'any'.")
-            for f_col in func_cols: agg_funcs[f_col] = 'any'
+            
+            if func_cols: 
+                logger.debug(f"Aggregating {len(func_cols)} function columns using 'any'.")
+                for f_col in func_cols: agg_funcs[f_col] = 'any'
+            
+            # Handle other columns
             other_cols = [c for c in var_meta_orig.columns if c not in agg_funcs and c != '__group_key__']
-            for o_col in other_cols: agg_funcs[o_col] = lambda series: series.dropna().iloc[0] if not series.dropna().empty else np.nan
+            for o_col in other_cols: 
+                agg_funcs[o_col] = lambda series: series.dropna().iloc[0] if not series.dropna().empty else np.nan
+            
             if not agg_funcs: raise ValueError("No columns found to aggregate in .var.")
-            logger.debug(f"Aggregating .var using functions: {list(agg_funcs.keys())}")
+            
             grouped_meta = var_meta_orig.groupby('__group_key__', observed=False).agg(agg_funcs)
-            adata_new.var = grouped_meta.reindex(unique_taxa); adata_new.var.index.name = tax_level
-        except Exception as e: logger.warning(f"Could not aggregate .var metadata: {e}"); adata_new.var_names = unique_taxa.astype(str).tolist(); adata_new.var = pd.DataFrame(index=adata_new.var_names); adata_new.var.index.name = tax_level
-        adata_new.var_names = adata_new.var_names.astype(str).tolist(); adata_new.var.index = adata_new.var.index.astype(str)
-        if 'Unassigned' in adata_new.var_names: logger.info("Filtering 'Unassigned' taxa."); adata_new = adata_new[:, adata_new.var_names != 'Unassigned'].copy()
-        logger.info(f"Aggregation complete. New shape: {adata_new.shape}"); return adata_new
+            adata_new.var = grouped_meta.reindex(unique_taxa)
+            adata_new.var.index.name = tax_level
+            
+        except Exception as e: 
+            logger.warning(f"Could not aggregate .var metadata: {e}")
+            adata_new.var_names = unique_taxa.astype(str).tolist()
+            adata_new.var = pd.DataFrame(index=adata_new.var_names)
+            adata_new.var.index.name = tax_level
+            
+        # Final formatting
+        adata_new.var_names = adata_new.var_names.astype(str).tolist()
+        adata_new.var.index = adata_new.var.index.astype(str)
+        
+        if 'Unassigned' in adata_new.var_names: 
+            logger.info("Filtering 'Unassigned' taxa.")
+            adata_new = adata_new[:, adata_new.var_names != 'Unassigned'].copy()
+            
+        logger.info(f"Aggregation complete. New shape: {adata_new.shape}")
+        return adata_new
 
     @staticmethod
     def clr_transform(adata_in: ad.AnnData, pseudocount: float = 1.0, use_cache: bool = True) -> pd.DataFrame:
-        """Centered log-ratio transformation with optional caching.
-        
-        Args:
-            adata_in: AnnData object with count data
-            pseudocount: Pseudocount to add before log transform
-            use_cache: Whether to use/store cached results (default: True)
-        
-        Returns:
-            DataFrame with CLR-transformed data
-        """
+        """Centered log-ratio transformation with optional caching."""
         # Generate cache key from sample and feature names
         cache_key = f"{hash(tuple(adata_in.obs_names))}_{hash(tuple(adata_in.var_names))}_{pseudocount}"
         
@@ -243,21 +318,30 @@ class AnalysisUtils:
             return AnalysisUtils._clr_cache[cache_key]
         
         logger.debug(f"Computing CLR transform (pseudocount={pseudocount})")
-        if 'raw_counts' in adata_in.layers: counts_mtx = adata_in.layers['raw_counts']; logger.debug("Using 'raw_counts'.")
-        else: counts_mtx = adata_in.X; logger.warning("Using '.X' for CLR.")
-        if sparse.issparse(counts_mtx): counts_mtx = counts_mtx.toarray()  # type: ignore[union-attr]
-        if 'sparse' in str(type(counts_mtx)): counts_mtx = counts_mtx.toarray()  # type: ignore[union-attr]
+        
+        if 'raw_counts' in adata_in.layers: 
+            counts_mtx = adata_in.layers['raw_counts']
+        else: 
+            counts_mtx = adata_in.X
+            
+        if sparse.issparse(counts_mtx): 
+            counts_mtx = counts_mtx.toarray()
+        if 'sparse' in str(type(counts_mtx)): 
+            counts_mtx = counts_mtx.toarray()
+            
         counts_mtx = np.asarray(counts_mtx)
-        counts_mtx_pseudo = counts_mtx + pseudocount; log_counts = np.log(counts_mtx_pseudo)
-        geom_mean_log = np.mean(log_counts, axis=1, keepdims=True); clr_data = log_counts - geom_mean_log
+        counts_mtx_pseudo = counts_mtx + pseudocount
+        log_counts = np.log(counts_mtx_pseudo)
+        geom_mean_log = np.mean(log_counts, axis=1, keepdims=True)
+        clr_data = log_counts - geom_mean_log
+        
         clr_df = pd.DataFrame(clr_data, index=adata_in.obs_names, columns=adata_in.var_names)
         
         # Store in cache
         if use_cache:
             AnalysisUtils._clr_cache[cache_key] = clr_df
-            logger.debug(f"Cached CLR transform (total cached: {len(AnalysisUtils._clr_cache)})")
-        
-        logger.debug("CLR transform complete."); return clr_df
+            
+        return clr_df
     
     @staticmethod
     def clear_clr_cache():
@@ -272,18 +356,8 @@ class AnalysisUtils:
         target_cols: List[str],
         min_samples_per_group: int = 10,
         max_classes: int = 10
-    ) -> Dict[str, List[str]]:
-        """Pre-filter ML targets to avoid small class size warnings.
-        
-        Args:
-            adata: AnnData object
-            target_cols: List of potential target columns
-            min_samples_per_group: Minimum samples required per class
-            max_classes: Maximum number of classes for classification
-        
-        Returns:
-            Dict with 'valid' and 'skipped' target lists, with skip reasons
-        """
+    ) -> Dict[str, Union[List[str], Dict]]:
+        """Pre-filter ML targets to avoid small class size warnings."""
         valid_targets = []
         skipped_targets = []
         skip_reasons = {}
@@ -336,30 +410,21 @@ class AnalysisUtils:
         
         return {'valid': valid_targets, 'skipped': skipped_targets, 'reasons': skip_reasons}
 
-    # --- REFACTORED METHOD ---
     @staticmethod
     def find_plottable_metadata(adata: ad.AnnData, fullness_threshold: float = 0.4, max_categories: int = 50) -> Dict[str, List[str]]:
         """
         Identifies plottable numeric and categorical columns in .obs.
-        
-        This method is less verbose, grouping all excluded columns into a
-        single debug log message at the end.
-        
-        FIXED:
-        - Priority columns (facility_*, lat/lon) exempt from fullness threshold
-        - Numeric columns checked BEFORE high cardinality exclusion
-        - Boolean columns now only count True/False, exclude NaN from value counts
+        Consolidates exclusion logging to avoid clutter.
         """
         logger.info(f"Identifying plottable metadata (Fullness > {fullness_threshold}, Max Categories < {max_categories})...")
         categorical_cols = []
         numeric_cols = []
-        # Store excluded columns and their reasons for a grouped log
         excluded_cols: Dict[str, str] = {} 
         obs_df = adata.obs
         n_obs = adata.n_obs
 
         if n_obs == 0: 
-            logger.warning("No observations."); 
+            logger.warning("No observations.")
             return {'categorical': [], 'numeric': []}
             
         for col in obs_df.columns:
@@ -383,13 +448,12 @@ class AnalysisUtils:
                 excluded_cols[col] = f'low fullness ({fullness:.1%})'
                 continue
             
-            # Count ONLY non-null unique values for booleans (exclude NaN)
             col_series = obs_df[col]
             col_dtype = col_series.dtype
             
-            # For boolean columns, only count True/False
+            # For boolean columns, only count True/False (exclude NaN)
             if isinstance(col_dtype, type(pd.BooleanDtype())) or pd.api.types.is_bool_dtype(col_dtype):
-                n_unique = col_series.dropna().nunique()  # Don't count NaN as a category
+                n_unique = col_series.dropna().nunique() 
             else:
                 n_unique = col_series.nunique()
                 
@@ -397,7 +461,7 @@ class AnalysisUtils:
                 excluded_cols[col] = '1 unique value'
                 continue
                 
-            # --- Classification Logic (FIXED ORDER) ---
+            # --- Classification Logic ---
             
             # 1. Check if column is NUMERIC first (BEFORE checking cardinality)
             if pd.api.types.is_numeric_dtype(col_dtype):
@@ -405,9 +469,8 @@ class AnalysisUtils:
                 if pd.api.types.is_integer_dtype(col_dtype) and n_unique < max_categories / 2: 
                     categorical_cols.append(col)
                 else: 
-                    # This is numeric - add to numeric_cols (don't exclude for high cardinality!)
                     numeric_cols.append(col)
-                continue  # Skip to next column
+                continue
             
             # 2. Boolean types
             if isinstance(col_dtype, type(pd.BooleanDtype())) or pd.api.types.is_bool_dtype(col_dtype):
@@ -421,7 +484,7 @@ class AnalysisUtils:
                     excluded_cols[col] = f'high cardinality categorical ({n_unique})'
                     continue
                     
-                # Handle 'object' dtype, which could be mixed or numeric-as-string
+                # Handle 'object' dtype (could be mixed)
                 if pd.api.types.is_object_dtype(col_dtype):
                     try:
                         temp_series = col_series.dropna()
@@ -429,39 +492,33 @@ class AnalysisUtils:
                             excluded_cols[col] = 'all NA'
                             continue
                         
-                        # OPTIMIZATION: Sample first for large columns (10x speedup)
+                        # Sampling for speed
                         sample_size = min(100, len(temp_series))
                         sample = temp_series.iloc[:sample_size]
                         numeric_sample = pd.to_numeric(sample, errors='coerce')
                         
-                        # Quick check on sample
                         if numeric_sample.notna().sum() / len(sample) > 0.9:
-                            # Verify with full column
+                            # Verify with full column if sample looks numeric
                             numeric_check = pd.to_numeric(temp_series, errors='coerce')
                             if numeric_check.notna().sum() / len(temp_series) > 0.9:
                                 numeric_cols.append(col)
                             else:
                                 categorical_cols.append(col)
                         else:
-                            categorical_cols.append(col) # Treat as categorical
+                            categorical_cols.append(col)
                             
                     except Exception as e: 
-                        # Fallback for complex object types
                         logger.warning(f"Error checking object column '{col}': {e}. Treating as categorical.")
                         categorical_cols.append(col)
                 else: 
-                    # String or pd.Categorical
                     categorical_cols.append(col)
             else: 
                 excluded_cols[col] = f'unknown dtype ({col_dtype})'
 
         # --- Grouped Logging ---
-        # Log the summary of what was found
-        logger.info(f"Found {len(numeric_cols)} numeric and {len(categorical_cols)} categorical columns eligible for ML/FS analysis (not all will be used; see config/strict_targets).")
+        logger.info(f"Found {len(numeric_cols)} numeric and {len(categorical_cols)} categorical columns eligible for analysis.")
         
-        # Log the grouped exclusions at DEBUG level
         if excluded_cols:
-            # Group columns by their exclusion reason
             reason_groups: Dict[str, List[str]] = defaultdict(list)
             for col, reason in excluded_cols.items():
                 reason_groups[reason].append(col)
@@ -469,7 +526,6 @@ class AnalysisUtils:
             logger.debug("--- Summary of Excluded Metadata Columns ---")
             for reason, cols in sorted(reason_groups.items()):
                 count = len(cols)
-                # Show first 5 columns as an example to avoid huge log lines
                 example_cols = ", ".join(cols[:5])
                 if count > 5:
                     example_cols += "..."

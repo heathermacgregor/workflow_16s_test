@@ -51,11 +51,11 @@ phylogeny:
 # -------------------------------------------------------------------
 verbose: True
 execution:
-  threads: 16        # INCREASED from 32
-  cpu_limit: 16      # INCREASED from 52 (Allow slightly higher peak)
-  max_concurrency: 2
+  threads: 32        # INCREASED from 32
+  cpu_limit: 24      # INCREASED from 52 (Allow slightly higher peak)
+  max_concurrency: 8
 cpu:
-  limit: 16
+  limit: 24
 
 # -------------------------------------------------------------------
 # WEB SCRAPING SETTINGS
@@ -427,7 +427,7 @@ ml:
     enable_regression: True      # Disable all regression tasks
     enable_classification: True
     n_estimators: 500              # Increase trees for better performance
-    max_depth: 20
+    max_depth: 10
     
   validation:
     test_size: 0.3                 # Use 80/20 split instead of 70/30

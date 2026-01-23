@@ -312,33 +312,31 @@ class MinDatAPI:
 # ==================================================================================== #
 
 def world_uranium_mines(config: AppConfig):
-    """Main function to retrieve worldwide uranium mines data.
-    
-    Args:
-        config: Application configuration containing credentials and settings.
-        
-    Returns:
-        Tuple containing combined DataFrame and GeoDataFrame of uranium mines.
-    """
+    """Main function to retrieve worldwide uranium mines data."""
     api_key = config.credentials.mindat_api_key
     if not api_key:
         raise ValueError("Mindat API key must be provided in configuration")
+        
     use_local = config.nfc_facilities.use_cache
     verbose = config.verbose
     user_agent = config.web.user_agent
+    
     # Setup project directory
     project_dir = Project(config)
+    output_dir = None  # Initialize to None for the API call later
+    
     if project_dir:
-        output_dir = project_dir.raw_data / "_nfc_facilities" 
+        output_dir = project_dir.raw_data / "_nfc_facilities"
         output_dir.mkdir(parents=True, exist_ok=True)
+        
         output_path = output_dir / "mindat.tsv"
+        
         if use_local and output_path.exists():
             logger.info(f"Using local MinDat data from {output_path}")
             df = pd.read_csv(output_path, sep='\t')
             # Ensure required columns exist
             for col in ["longitude", "latitude", "country"]:
                 if col not in df.columns:
-                    # Check if lat/lon exist instead
                     if col == 'latitude' and 'lat' in df.columns:
                         df['latitude'] = df['lat']
                     elif col == 'longitude' and 'lon' in df.columns:
@@ -346,20 +344,19 @@ def world_uranium_mines(config: AppConfig):
                     else:
                         df[col] = None
             return df
-    else:
-        output_path = None
-        
-    mindat_api = MinDatAPI(api_key, user_agent, output_path, verbose=verbose)
+
+    # [FIX] Pass 'output_dir' (folder), NOT 'output_path' (file)
+    mindat_api = MinDatAPI(api_key, user_agent, output_dir, verbose=verbose)
     df = mindat_api._get_uranium_mines_world()
     
     # Ensure required columns exist for downstream consumption
     for col in ["longitude", "latitude", "country"]:
         if col not in df.columns:
-            # If we have lat/lon from _filter_data, alias them to latitude/longitude
             if col == 'latitude' and 'lat' in df.columns:
                 df['latitude'] = df['lat']
             elif col == 'longitude' and 'lon' in df.columns:
                 df['longitude'] = df['lon']
             else:
                 df[col] = None
+                
     return df

@@ -62,7 +62,6 @@ def clean_feature_names(df: pd.DataFrame) -> pd.DataFrame:
 # ==================================================================================== #
 
 def prepare_batch_covariates(
-        logger.info(f"Available metadata columns in adata.obs: {list(adata.obs.columns)}")
     adata: ad.AnnData,
     batch_columns: List[str],
     sample_indices: pd.Index,
@@ -71,70 +70,76 @@ def prepare_batch_covariates(
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Prepare batch/technical covariates for inclusion in ML models.
+    FIXED: Removed overwrite bug and added safe categorical handling.
     """
     batch_df_list = []
     metadata = {'dropped': [], 'encoded': {}, 'numeric': [], 'categorical': []}
     
     for col in batch_columns:
-        # Fallback: if 'batch_original' is missing, use 'study_accession' if present
+        # --- FIX 1: Correct Fallback Logic ---
         actual_col = col
         if col == 'batch_original' and col not in adata.obs.columns and 'study_accession' in adata.obs.columns:
-            logger.info("'batch_original' not found, falling back to 'study_accession' as batch column.")
+            logger.info("'batch_original' not found, falling back to 'study_accession'.")
             actual_col = 'study_accession'
+            
         if actual_col not in adata.obs.columns:
-            logger.warning(f"Batch column '{actual_col}' not found in metadata, skipping")
+            logger.warning(f"Batch column '{actual_col}' not found, skipping")
             metadata['dropped'].append({'column': actual_col, 'reason': 'not_found'})
             continue
+
+        # Use actual_col ONLY. Do not overwrite with 'col'.
         col_data = adata.obs.loc[sample_indices, actual_col].copy()
         
-        col_data = adata.obs.loc[sample_indices, col].copy()
-        
-        # Check for too many missing values
+        # Check missing pct
         missing_pct = col_data.isna().sum() / len(col_data)
         if missing_pct > 0.5:
-            logger.warning(f"Batch column '{col}' has {missing_pct:.1%} missing values, skipping")
-            metadata['dropped'].append({'column': col, 'reason': 'too_many_missing', 'missing_pct': missing_pct})
+            logger.warning(f"Batch column '{actual_col}' has {missing_pct:.1%} missing values, skipping")
+            metadata['dropped'].append({'column': actual_col, 'reason': 'too_many_missing', 'missing_pct': missing_pct})
             continue
         
-        # Detect column type
+        # Detect type
         is_numeric = pd.api.types.is_numeric_dtype(col_data)
         
         if is_numeric:
-            # Numeric covariate - fill missing and normalize
             col_data_clean = col_data.fillna(col_data.median())
-            batch_df_list.append(pd.DataFrame({col: col_data_clean}, index=sample_indices))
-            metadata['numeric'].append(col)
+            batch_df_list.append(pd.DataFrame({actual_col: col_data_clean}, index=sample_indices))
+            metadata['numeric'].append(actual_col)
         else:
-            # Categorical covariate
+            # Categorical logic
             n_categories = col_data.nunique()
             if n_categories > max_categories:
-                logger.warning(f"Batch column '{col}' has {n_categories} categories (max {max_categories}), skipping")
-                metadata['dropped'].append({'column': col, 'reason': 'too_many_categories', 'n_categories': n_categories})
+                logger.warning(f"Batch column '{actual_col}' has {n_categories} categories (> {max_categories}), skipping")
+                metadata['dropped'].append({'column': actual_col, 'reason': 'too_many_categories', 'n_categories': n_categories})
                 continue
             
-            # Fill missing with 'Unknown'
-            col_data_clean = col_data.fillna('Unknown').astype(str)
+            # --- FIX 2: Safe Categorical Filling ---
+            if isinstance(col_data.dtype, pd.CategoricalDtype):
+                if 'Unknown' not in col_data.cat.categories:
+                    col_data = col_data.cat.add_categories('Unknown')
+                col_data_clean = col_data.fillna('Unknown')
+            else:
+                col_data_clean = col_data.fillna('Unknown').astype(str)
             
             if one_hot_encode:
-                # One-hot encode
-                dummies = pd.get_dummies(col_data_clean, prefix=col, drop_first=True)
+                # Use actual_col as prefix
+                dummies = pd.get_dummies(col_data_clean, prefix=actual_col, drop_first=True)
                 batch_df_list.append(dummies)
-                metadata['encoded'][col] = {'method': 'one_hot', 'n_categories': n_categories, 'n_features': len(dummies.columns)}
-                metadata['categorical'].append(col)
+                metadata['encoded'][actual_col] = {'method': 'one_hot', 'n_categories': n_categories, 'n_features': len(dummies.columns)}
+                metadata['categorical'].append(actual_col)
             else:
-                # Label encode
+                from sklearn.preprocessing import LabelEncoder
                 le = LabelEncoder()
-                encoded = le.fit_transform(col_data_clean)
-                batch_df_list.append(pd.DataFrame({col: encoded}, index=sample_indices))
-                metadata['encoded'][col] = {'method': 'label', 'n_categories': n_categories, 'classes': le.classes_.tolist()}
-                metadata['categorical'].append(col)
+                encoded = le.fit_transform(col_data_clean.astype(str))
+                batch_df_list.append(pd.DataFrame({actual_col: encoded}, index=sample_indices))
+                metadata['encoded'][actual_col] = {'method': 'label', 'n_categories': n_categories}
+                metadata['categorical'].append(actual_col)
     
     if not batch_df_list:
         logger.warning("No valid batch covariates prepared")
         return pd.DataFrame(index=sample_indices), metadata
     
     batch_df = pd.concat(batch_df_list, axis=1)
-    logger.info(f"Prepared {len(batch_df.columns)} batch covariate features from {len(metadata['numeric']) + len(metadata['categorical'])} columns")
+    logger.info(f"Prepared {len(batch_df.columns)} batch features from {len(metadata['numeric']) + len(metadata['categorical'])} columns")
     
     return batch_df, metadata
 
