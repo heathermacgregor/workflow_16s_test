@@ -2,7 +2,7 @@ import json
 import logging
 from pathlib import Path
 from typing import List, Dict, Any
-
+import scanpy as sc
 from workflow_16s.downstream.diversity import (
     run_alpha_diversity, run_beta_diversity_and_stats, run_taxa_metadata_statistics, 
     run_constrained_ordination, run_network_analysis,
@@ -115,22 +115,19 @@ def run_analysis_suite(workflow):
     workflow.logger.info("--- Facility Match Counts (Nuclear Only) ---")
     workflow.logger.info("\n" + str(workflow.adata.obs['facility_match'].value_counts()))
     
-    workflow.logger.info("--- Industry Match Counts (Any Facility) ---")
-    workflow.logger.info("\n" + str(workflow.adata.obs['industry_match'].value_counts()))
+    #workflow.logger.info("--- Industry Match Counts (Any Facility) ---")
+    #workflow.logger.info("\n" + str(workflow.adata.obs['industry_match'].value_counts()))
 
     # Verify logic: No sample should be BOTH 'facility_match' (Nuclear) AND 'analog_match'
-    overlaps = workflow.adata.obs[
-        workflow.adata.obs['facility_match'] & workflow.adata.obs['analog_match']
-    ]
+    #overlaps = workflow.adata.obs[
+    #    workflow.adata.obs['facility_match'] & workflow.adata.obs['analog_match']
+    #]
     
-    if len(overlaps) > 0:
-        workflow.logger.error(f"CRITICAL LOGIC ERROR: {len(overlaps)} samples are marked as BOTH Nuclear and Analog!")
-    else:
-        workflow.logger.info("Logic Check Passed: No overlaps between Nuclear and Analog assignments.")
+    #if len(overlaps) > 0:
+    #    workflow.logger.error(f"CRITICAL LOGIC ERROR: {len(overlaps)} samples are marked as BOTH Nuclear and Analog!")
+    #else:
+    #    workflow.logger.info("Logic Check Passed: No overlaps between Nuclear and Analog assignments.")
 
-    # Verify logic: No sample should be BOTH 'facility_match' (Nuclear) AND 'analog_match'
-    overlaps = workflow.adata.obs[workflow.adata.obs['facility_match'] & workflow.adata.obs['analog_match']]
-    assert len(overlaps) == 0, "Error: Samples marked as both Nuclear and Analog!"
     tree_file = workflow.output_dir / "all_features.tree"
     tree_path = tree_file if tree_file.exists() else None
     

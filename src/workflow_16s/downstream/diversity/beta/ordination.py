@@ -25,8 +25,7 @@ from skbio.stats.ordination import rda
 from skbio.tree import TreeNode
 from sklearn.preprocessing import StandardScaler
 
-from workflow_16s.downstream.steps.preprocessing import AnalysisUtils
-
+from workflow_16s.downstream.utils import AnalysisUtils
 from workflow_16s.downstream.visualization import PlottingUtils
 from workflow_16s.downstream.diversity.beta.distance_matrix import process_distance_matrix
 from workflow_16s.downstream.diversity.beta.plotting import plot_ordination

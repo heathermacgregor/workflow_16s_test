@@ -447,7 +447,7 @@ class MetadataManager:
         lon = pd.Series(np.nan, index=self.df.index)
 
         lat_sources = [
-            c for c in self.DEFAULT_COORDINATE_SOURCES['lat'] if c in self.df.columns
+           c for c in self.DEFAULT_COORDINATE_SOURCES['lat'] if c in self.df.columns
         ]
         lon_sources = [
             c for c in self.DEFAULT_COORDINATE_SOURCES['lon'] if c in self.df.columns
@@ -534,7 +534,7 @@ class MetadataManager:
                 self.df[term_category] = search_text_series.apply(
                     self._infer_ontology_term, term_map=term_map
                 )
-                logger.debug(f"Inferred ontology for '{term_category}'.")
+                logger.debug(f"nferred ontology for '{term_category}'.")
 
     def _process_contamination_status(self) -> None:
         if 'nuclear_contamination_status' in self.df.columns:
@@ -704,7 +704,7 @@ class MetadataManager:
                             resp.raise_for_status()
                             return ET.fromstring(await resp.text())
 
-                    except aiohttp.ClientError as e:
+                    except:#.ClientError as e:
                         logger.warning(
                             f"NCBI request for {accession} failed: {e}", exc_info=True
                         )
@@ -780,8 +780,7 @@ class MetadataManager:
                                 if val != canonical_val: col_mapping[val] = canonical_val
                     
                     if col_mapping: suggested_mappings[col] = col_mapping
-                except Exception as e:
-                    logger.error(f"Error analyzing column '{col}': {e}", exc_info=True)
+                except Exception as e: logger.error(f"Error analyzing column '{col}': {e}", exc_info=True)
                 finally: progress.update(task, advance=1)
                 
         return suggested_mappings
@@ -902,3 +901,104 @@ def standardize_lat_lon_columns(df: pd.DataFrame) -> pd.DataFrame:
                 break
                 
     return df
+
+# ==============================================================================
+# STANDALONE HELPER FUNCTIONS (Required by Ingestion)
+# ==============================================================================
+
+import scanpy as sc
+import anndata as ad
+import numpy as np
+
+def filter_samples_and_features(
+    adata: ad.AnnData, 
+    min_counts_per_sample: Any = 100, 
+    min_counts_per_feature: int = 10,
+    min_cells_per_feature: int = 2,
+    *args, **kwargs
+) -> ad.AnnData:
+    """
+    Filters low-quality samples and rare features (ASVs).
+    Handles cases where 'min_counts_per_sample' receives an AppConfig object.
+    """
+    if adata is None:
+        return None
+
+    # --- 1. Resolve Argument Types ---
+    # If the second argument is not an int, it's likely the AppConfig object passed by ingestion.py
+    target_min_sample = 100 # Default fallback
+    
+    if isinstance(min_counts_per_sample, (int, float)):
+        target_min_sample = int(min_counts_per_sample)
+    elif hasattr(min_counts_per_sample, 'preprocessing'): 
+        # Extract value from AppConfig object
+        try:
+            target_min_sample = int(min_counts_per_sample.preprocessing.filter.min_sequencing_depth)
+            logger.info(f"Extracted min_sequencing_depth={target_min_sample} from passed Config object.")
+        except Exception as e:
+            logger.warning(f"Could not extract filtering param from config: {e}. Using default {target_min_sample}.")
+    else:
+        logger.warning(f"Received invalid type {type(min_counts_per_sample)} for min_counts. Using default {target_min_sample}.")
+
+    logger.info(f"Filtering: min_counts_sample={target_min_sample}, min_counts_feature={min_counts_per_feature}")
+    
+    # --- 2. Apply Filters ---
+    try:
+        # Filter Samples (Rows)
+        sc.pp.filter_cells(adata, min_counts=target_min_sample)
+        
+        # Filter Features (Columns)
+        sc.pp.filter_genes(adata, min_counts=min_counts_per_feature)
+        sc.pp.filter_genes(adata, min_cells=min_cells_per_feature)
+        
+        logger.info(f"Filtered data shape: {adata.shape}")
+    except Exception as e:
+        logger.error(f"Filtering failed: {e}")
+        
+    return adata
+
+def clean_metadata(adata: ad.AnnData, *args, **kwargs) -> ad.AnnData:
+    """Standardizes metadata in .obs (bytes->str, strip whitespace, unify NaNs)."""
+    logger.info("Cleaning metadata...")
+    adata.obs.index = adata.obs.index.astype(str)
+    for col in adata.obs.columns:
+        if adata.obs[col].dtype == 'object' or isinstance(adata.obs[col].dtype, pd.CategoricalDtype):
+            if len(adata.obs) > 0 and isinstance(adata.obs[col].iloc[0], bytes):
+                 adata.obs[col] = adata.obs[col].apply(lambda x: x.decode('utf-8') if isinstance(x, bytes) else str(x))
+            series = adata.obs[col].astype(str).str.strip()
+            adata.obs[col] = series.replace(['nan', 'NaN', 'None', '<NA>', '', 'NoneType'], np.nan)
+    return adata
+
+def parse_taxonomy(adata: ad.AnnData, taxonomy_col: str = 'Taxon') -> ad.AnnData:
+    """Parses a taxonomy string column into separate rank columns."""
+    if taxonomy_col not in adata.var.columns:
+        # Case-insensitive fallback
+        for c in adata.var.columns:
+            if c.lower() == taxonomy_col.lower():
+                taxonomy_col = c
+                break
+        else:
+            logger.warning(f"Taxonomy column '{taxonomy_col}' not found. Skipping parse.")
+            return adata
+
+    logger.info(f"Parsing taxonomy from column '{taxonomy_col}'...")
+    ranks = ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']
+    try:
+        tax_series = adata.var[taxonomy_col].astype(str)
+        tax_df = tax_series.str.split(';', expand=True)
+        tax_df = tax_df.apply(lambda x: x.str.strip())
+        for i, rank in enumerate(ranks):
+            if i < tax_df.shape[1]:
+                adata.var[rank] = tax_df[i].replace(['', 'None', 'nan', '<NA>', 'NoneType'], 'Unassigned')
+    except Exception as e:
+        logger.error(f"Failed to parse taxonomy: {e}")
+    return adata
+
+def validate_metadata(adata: ad.AnnData, config=None) -> ad.AnnData:
+    """Wrapper to clean metadata and ensure priority columns exist."""
+    adata = clean_metadata(adata)
+    required = ['latitude', 'longitude', 'facility_match']
+    for col in required:
+        if col not in adata.obs.columns:
+            adata.obs[col] = False if col == 'facility_match' else np.nan
+    return adata

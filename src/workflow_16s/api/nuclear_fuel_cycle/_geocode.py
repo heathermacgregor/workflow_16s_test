@@ -56,7 +56,6 @@ class GeocodingService:
         if not query or not isinstance(query, str):
             return None
             
-        # clean query
         clean_query = query.strip()
         
         # Check Cache
@@ -93,7 +92,7 @@ class GeocodingService:
         except Exception as e:
             logger.debug(f"Geocoding failed for '{query}': {e}")
         
-        # Politeness sleep (Nominatim requires 1s between reqs, we do this via concurrency control)
+        # Politeness sleep
         await asyncio.sleep(1.0)
         return None
 
@@ -101,15 +100,12 @@ class GeocodingService:
         """
         Geocodes a list of location strings (e.g., "Facility Name, Country").
         """
-        # Filter out duplicates and already cached items to minimize requests
         unique_queries = list(set(queries))
         to_fetch = [q for q in unique_queries if q not in self.cache]
         
         logger.info(f"Geocoding: {len(queries)} total, {len(to_fetch)} new queries needed.")
         
         if to_fetch:
-            # Nominatim Strict Limit: 1 request per second.
-            # We use a Semaphore to enforce strict serial processing if using free tier.
             sem = asyncio.Semaphore(1) 
             
             async with aiohttp.ClientSession() as session:
@@ -117,16 +113,19 @@ class GeocodingService:
                 with get_progress_bar() as progress:
                     task_id = progress.add_task("Fetching coordinates...", total=len(to_fetch))
                     
-                    for q in to_fetch:
+                    for i, q in enumerate(to_fetch):
                         # Throttled execution
                         async with sem:
                             res = await self._fetch_single(session, q)
                             progress.update(task_id, advance=1)
-                            # Explicit wait to be polite to OSM servers
+                            # Explicit wait
                             await asyncio.sleep(1.1) 
+                        
+                        # [FIX] Save periodically so Ctrl+C doesn't kill progress
+                        if i % 10 == 0:
+                            self._save_cache()
                 
-            # Save updated cache
+            # Final save
             self._save_cache()
             
-        # Return results in original order
         return [self.cache.get(q) for q in queries]

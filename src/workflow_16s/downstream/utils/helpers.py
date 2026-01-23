@@ -13,8 +13,48 @@ from scipy.sparse import csc_matrix, csr_matrix, issparse
 from typing import Dict, List, Tuple, Optional, Union, Any
 from collections import defaultdict
 from workflow_16s.utils.logger import get_logger
+import scanpy as sc
+from pathlib import Path
+import seaborn as sns
+import matplotlib.pyplot as plt
+from workflow_16s.config_schema import AppConfig
 
 logger = get_logger("workflow_16s")
+
+def get_cfg_value(cfg_obj, key, default=None):
+    """Helper to safely get config values from dict or object."""
+    if isinstance(cfg_obj, dict): return cfg_obj.get(key, default)
+    return getattr(cfg_obj, key, default)
+
+def qc_metrics(adata: ad.AnnData, output_dir: Union[str, Path]) -> None:
+    """Calculates and plots basic QC metrics."""
+    if adata is None or adata.n_obs == 0: return
+    logger.info("Calculating QC metrics...")
+    sc.pp.calculate_qc_metrics(adata, percent_top=None, log1p=False, inplace=True)
+    
+    plot_path = Path(output_dir) / "qc_metrics.png"
+    try:
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        sns.histplot(data=adata.obs, x='total_counts', ax=axes[0], bins=30)
+        sns.histplot(data=adata.obs, x='n_genes_by_counts', ax=axes[1], bins=30)
+        plt.tight_layout()
+        plt.savefig(plot_path)
+        plt.close(fig)
+        logger.info(f"Saved QC plot: {plot_path}")
+    except Exception: pass
+
+def export_fasta(adata: ad.AnnData, config: Union[AppConfig, dict], output_dir: Union[str, Path]) -> None:
+    """Exports sequences to FASTA."""
+    if 'sequence' not in adata.var.columns: return
+    fasta_path = Path(output_dir) / "all_features.fasta"
+    try:
+        with open(fasta_path, "w") as f:
+            for feat_id, seq in adata.var['sequence'].dropna().items():
+                f.write(f">{feat_id}\n{seq}\n")
+        logger.info(f"FASTA exported to {fasta_path}")
+    except Exception as e: logger.error(f"FASTA export failed: {e}")
+
+
 
 class AnalysisUtils:
     """Contains static helper methods for analysis tasks."""
@@ -183,14 +223,27 @@ class AnalysisUtils:
             logger.error(f"Tax level '{tax_level}' not in .var.")
             return None
             
-        # Standardize Taxonomy Column
-        if isinstance(adata_copy.var[tax_level].dtype, pd.CategoricalDtype):
-            if 'Unassigned' not in adata_copy.var[tax_level].cat.categories: 
-                adata_copy.var[tax_level] = adata_copy.var[tax_level].cat.add_categories('Unassigned')
-            adata_copy.var[tax_level] = adata_copy.var[tax_level].fillna('Unassigned')
-        else: 
-            adata_copy.var[tax_level] = adata_copy.var[tax_level].astype(str).fillna('Unassigned').replace(['nan', '<NA>', 'None'], 'Unassigned')
-            
+        # ==================================================================
+        # 1. ROBUST STANDARDIZATION (The Fix)
+        # ==================================================================
+        # Force conversion to string to handle Categoricals AND Objects identically.
+        # This fixes the " g__X" (leading space) issue seen in your data.
+        tax_series = adata_copy.var[tax_level].astype(str).str.strip()
+        
+        # Unify all forms of "empty" to 'Unassigned'
+        # Note: We include 'nan' string because astype(str) converts np.nan to 'nan'
+        tax_series = tax_series.replace(
+            ['nan', 'NaN', '<NA>', 'None', '', 'NoneType'], 
+            'Unassigned'
+        )
+        
+        # Fill any remaining real NaNs
+        tax_series = tax_series.fillna('Unassigned')
+        
+        # Update the dataframe
+        adata_copy.var[tax_level] = tax_series
+        # ==================================================================
+
         # Get Counts Matrix
         if 'raw_counts' in adata_copy.layers: 
             counts_mtx = adata_copy.layers['raw_counts']
@@ -209,10 +262,10 @@ class AnalysisUtils:
         asv_to_tax_map = adata_copy.var[tax_level]
         logger.debug("Creating sparse grouper matrix for aggregation...")
         
-        # 1. Get unique taxa and their indices
+        # 2. Get unique taxa and their indices
         unique_taxa, group_indices = np.unique(asv_to_tax_map, return_inverse=True)
 
-        # 2. Create the (n_groups x n_features) grouper matrix
+        # 3. Create the (n_groups x n_features) grouper matrix
         n_features = adata_copy.n_vars
         n_groups = len(unique_taxa)
         
@@ -226,8 +279,7 @@ class AnalysisUtils:
             shape=(n_groups, n_features)
         )
 
-        # 3. Perform the aggregation with matrix multiplication
-        #    (n_samples x n_features) @ (n_features x n_groups) = (n_samples x n_groups)
+        # 4. Perform the aggregation with matrix multiplication
         if not isinstance(counts_mtx, csr_matrix):
             if issparse(counts_mtx):
                 counts_mtx = counts_mtx.tocsr()
@@ -235,9 +287,9 @@ class AnalysisUtils:
                 counts_mtx = csr_matrix(counts_mtx)
                 
         logger.debug("Performing sparse aggregation...")
-        agg_mtx = counts_mtx @ M_grouper.T  # This is the fast, sparse multiplication
+        agg_mtx = counts_mtx @ M_grouper.T 
 
-        # 4. Create the new AnnData
+        # 5. Create the new AnnData
         new_var = pd.DataFrame(index=unique_taxa)
         new_var.index.name = tax_level
         
@@ -253,37 +305,32 @@ class AnalysisUtils:
         adata_new.layers['raw_counts'] = csr_matrix(adata_new.X)
         logger.debug(f"Counts aggregation resulted in {adata_new.n_vars} groups.")
         
-        # 5. Aggregate .var metadata
+        # 6. Aggregate .var metadata
+        # (This block remains largely the same, but relies on the cleaned taxonomy)
         tax_levels_all = AnalysisUtils.TAX_LEVELS_ALL
         levels_to_keep = tax_levels_all[:tax_levels_all.index(tax_level) + 1] if tax_level in tax_levels_all else [tax_level]
         
         logger.debug(f"Aggregating .var metadata up to {tax_level}...")
         try:
             var_meta_orig = adata_in.var.copy()
-            if tax_level not in var_meta_orig.columns: raise KeyError(f"Column '{tax_level}' not found.")
+            # Use the CLEANED series for grouping metadata
+            var_meta_orig['__group_key__'] = tax_series.values 
             
-            var_meta_orig['__group_key__'] = var_meta_orig[tax_level].fillna('Unassigned')
             agg_funcs = {}
             levels_present = [lvl for lvl in levels_to_keep if lvl in var_meta_orig.columns]
             
-            # Default aggregation: take first non-null
             for lvl in levels_present: 
                 agg_funcs[lvl] = lambda series: series.dropna().iloc[0] if not series.dropna().empty else np.nan
             
-            # Identify function columns by prefix
             func_prefixes = ("FAPROTAX_", "CUSTOM_", "PICRUST_") 
             func_cols = [c for c in var_meta_orig.columns if c.startswith(func_prefixes) and var_meta_orig[c].dtype == bool]
             
             if func_cols: 
-                logger.debug(f"Aggregating {len(func_cols)} function columns using 'any'.")
                 for f_col in func_cols: agg_funcs[f_col] = 'any'
             
-            # Handle other columns
             other_cols = [c for c in var_meta_orig.columns if c not in agg_funcs and c != '__group_key__']
             for o_col in other_cols: 
                 agg_funcs[o_col] = lambda series: series.dropna().iloc[0] if not series.dropna().empty else np.nan
-            
-            if not agg_funcs: raise ValueError("No columns found to aggregate in .var.")
             
             grouped_meta = var_meta_orig.groupby('__group_key__', observed=False).agg(agg_funcs)
             adata_new.var = grouped_meta.reindex(unique_taxa)
@@ -299,18 +346,24 @@ class AnalysisUtils:
         adata_new.var_names = adata_new.var_names.astype(str).tolist()
         adata_new.var.index = adata_new.var.index.astype(str)
         
-        if 'Unassigned' in adata_new.var_names: 
-            logger.info("Filtering 'Unassigned' taxa.")
-            adata_new = adata_new[:, adata_new.var_names != 'Unassigned'].copy()
+        # [CRITICAL SAFETY CHECK]
+        if 'Unassigned' in adata_new.var_names:
+            if len(adata_new.var_names) == 1:
+                logger.warning(f"⚠️ All features mapped to 'Unassigned'! Keeping it to avoid empty dataset.") 
+            else:
+                logger.info("Filtering 'Unassigned' taxa.")
+                adata_new = adata_new[:, adata_new.var_names != 'Unassigned'].copy()
             
         logger.info(f"Aggregation complete. New shape: {adata_new.shape}")
         return adata_new
-
+    
     @staticmethod
     def clr_transform(adata_in: ad.AnnData, pseudocount: float = 1.0, use_cache: bool = True) -> pd.DataFrame:
         """Centered log-ratio transformation with optional caching."""
-        # Generate cache key from sample and feature names
-        cache_key = f"{hash(tuple(adata_in.obs_names))}_{hash(tuple(adata_in.var_names))}_{pseudocount}"
+        # [FIX] Force conversion to string tuple to avoid 'implicit conversion' warnings
+        obs_key = hash(tuple(str(x) for x in adata_in.obs_names))
+        var_key = hash(tuple(str(x) for x in adata_in.var_names))
+        cache_key = f"{obs_key}_{var_key}_{pseudocount}"
         
         # Check cache
         if use_cache and cache_key in AnalysisUtils._clr_cache:
@@ -349,6 +402,31 @@ class AnalysisUtils:
         n_cached = len(AnalysisUtils._clr_cache)
         AnalysisUtils._clr_cache.clear()
         logger.info(f"Cleared CLR cache ({n_cached} entries removed)")
+
+    # [NEW METHOD ADDED HERE TO FIX CRASH]
+    @staticmethod
+    def apply_transform(adata, method='clr'):
+        """
+        Applies normalization/transformation to an AnnData object or DataFrame.
+        Returns a DataFrame of transformed features.
+        """
+        # CLR requires AnnData object input to access .layers/etc correctly
+        if method == 'clr':
+            return AnalysisUtils.clr_transform(adata)
+
+        # For simple math transforms, we can work on the DataFrame
+        if hasattr(adata, 'to_df'):
+            df = adata.to_df()
+        else:
+            df = adata.copy()
+
+        if method == 'log1p':
+            return np.log1p(df)
+        elif method == 'binary':
+            return (df > 0).astype(int)
+        else:
+            # Default: no transform
+            return df
     
     @staticmethod
     def filter_ml_targets(

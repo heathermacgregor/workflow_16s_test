@@ -14,7 +14,7 @@ import scanpy as sc
 import scipy.stats as stats
 from statsmodels.stats.multitest import multipletests
 
-from workflow_16s.downstream.steps.preprocessing import AnalysisUtils
+from workflow_16s.downstream.utils import AnalysisUtils
 from workflow_16s.downstream.visualization import PlottingUtils, DEFAULT_HEIGHT
 from workflow_16s.utils.logger import get_logger
 

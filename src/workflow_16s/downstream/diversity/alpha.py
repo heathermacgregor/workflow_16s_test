@@ -15,7 +15,7 @@ from skbio.diversity import alpha_diversity
 from skbio.tree import TreeNode
 import anndata as ad
 
-from workflow_16s.downstream.steps.preprocessing import AnalysisUtils
+from workflow_16s.downstream.utils import AnalysisUtils
 from workflow_16s.downstream.visualization import PlottingUtils, DEFAULT_HEIGHT
 from workflow_16s.utils.logger import get_logger
 

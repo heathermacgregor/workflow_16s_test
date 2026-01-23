@@ -15,8 +15,7 @@ from sklearn.metrics import silhouette_score, silhouette_samples, adjusted_rand_
 from sklearn_extra.cluster import KMedoids
 from scipy.sparse import issparse
 
-# Import from the correct steps location
-from workflow_16s.downstream.steps.preprocessing import AnalysisUtils
+from workflow_16s.downstream.utils import AnalysisUtils
 from workflow_16s.downstream.visualization import PlottingUtils, DEFAULT_HEIGHT
 from workflow_16s.utils.logger import get_logger
 from workflow_16s.utils.progress import get_progress_bar

@@ -2,7 +2,7 @@
 import pandas as pd
 import plotly.express as px
 from skbio.stats.ordination import rda
-from workflow_16s.downstream.steps.preprocessing import AnalysisUtils
+from workflow_16s.downstream.utils import AnalysisUtils
 from workflow_16s.utils.logger import get_logger
 
 logger = get_logger("workflow_16s")

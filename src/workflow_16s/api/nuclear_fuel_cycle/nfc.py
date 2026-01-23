@@ -270,7 +270,7 @@ class NFCFacilitiesHandler:
         """Main Pipeline: Fetch -> Geocode -> De-duplicate -> Enrich."""
         logger.info(f"Starting Unified Facility Pipeline...")
         df = self._get_data()
-        df = await self._geocode(df)
+        #df = await self._geocode(df)
         df = self._deduplicate_facilities(df)
         df = self._enrich_metadata(df)
         self.nfc_facilities_df = standardize_lat_lon_columns(df)

@@ -104,14 +104,10 @@ def fix_adata_dtypes(adata: ad.AnnData, inplace: bool = True) -> Optional[ad.Ann
             continue
 
         # Skip if already correct
-        if pd.api.types.is_numeric_dtype(series):
-            continue
-        if pd.api.types.is_bool_dtype(series):
-            continue
-        if pd.api.types.is_categorical_dtype(series):
-            continue
-        if pd.api.types.is_datetime64_any_dtype(series):
-            continue
+        if pd.api.types.is_numeric_dtype(series): continue
+        if pd.api.types.is_bool_dtype(series): continue
+        if isinstance(series.dtype, pd.CategoricalDtype): continue
+        if pd.api.types.is_datetime64_any_dtype(series): continue
 
         # Try to convert object dtype
         if series.dtype == object:
@@ -123,8 +119,7 @@ def fix_adata_dtypes(adata: ad.AnnData, inplace: bool = True) -> Optional[ad.Ann
                     adata.obs[col] = dt_series.dt.strftime('%Y-%m-%d').fillna('').astype(str)
                     logger.debug(f"Converted '{col}' to datetime string (ISO format)")
                     continue
-                except Exception:
-                    pass
+                except Exception: pass
             
             # Check if column should be numeric
             is_numeric_col = any(pattern in col for pattern in numeric_patterns)
@@ -157,8 +152,7 @@ def fix_adata_dtypes(adata: ad.AnnData, inplace: bool = True) -> Optional[ad.Ann
         # Skip if already numeric or categorical
         if pd.api.types.is_numeric_dtype(series):
             continue
-        if pd.api.types.is_categorical_dtype(series):
-            continue
+        if isinstance(series.dtype, pd.CategoricalDtype): continue
         
         if series.dtype == object:
             try:
@@ -208,10 +202,14 @@ def safe_write_h5ad(adata: ad.AnnData, filename: str, fix_dtypes: bool = True, c
         # To be safe for a "save" operation, we operate on a copy if we don't want to touch the runtime object.
         adata_copy = adata.copy()
         fix_adata_dtypes(adata_copy, inplace=True)
-        adata_copy.write_h5ad(filename, compression=compression)
+        valid_compressions = ('gzip', 'lzf', None)
+        compression_arg = compression if compression in valid_compressions else None
+        adata_copy.write_h5ad(filename, compression=compression_arg)
         logger.info(f"Saved AnnData to {filename} (with dtype fixes)")
     else:
-        adata.write_h5ad(filename, compression=compression)
+        valid_compressions = ('gzip', 'lzf', None)
+        compression_arg = compression if compression in valid_compressions else None
+        adata.write_h5ad(filename, compression=compression_arg)
         logger.info(f"Saved AnnData to {filename}")
 
 
@@ -247,3 +245,267 @@ def inspect_adata_dtypes(adata: ad.AnnData) -> pd.DataFrame:
         })
     
     return pd.DataFrame(results)
+
+
+import math
+import csv
+import os
+import re
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
+from multiprocessing import cpu_count
+
+import anndata as ad
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import scanpy as sc
+import seaborn as sns
+import scipy.sparse
+from scipy.sparse import csc_matrix, csr_matrix, issparse
+import joblib
+from joblib import Parallel, delayed
+
+from workflow_16s.config_schema import AppConfig
+from workflow_16s.utils.logger import get_logger
+from workflow_16s.utils.progress import get_progress_bar
+
+logger = get_logger("workflow_16s")
+
+# --- Constants ---
+TAX_LEVELS = ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']
+EXPECTED_VAR_DTYPES = {
+    'Taxon': 'string', 
+    'Confidence': 'Float64', 
+    'sequence': 'string',
+    **{level: 'string' for level in TAX_LEVELS}
+}
+TARGET_GENE_NORMALIZATION = {
+    '16S': ['16S', '16S rRNA', '16S rRNA gene', '16s', '16s rrna'],
+    '18S': ['18S', '18S rRNA', '18s'],
+    'ITS': ['ITS', 'ITS1', 'ITS2', 'its'],
+}
+
+    
+
+def _validate_one_file(f: Path) -> Tuple[str, Union[Path, str]]:
+    try:
+        adata_individual = sc.read_h5ad(f, backed='r')
+        if adata_individual.n_vars == 0: return (f.name, "Zero features.")
+        return (f.stem, f)
+    except Exception as e: 
+        return (f.name, f"Failed read. Error: {e}")
+
+# --- Core Processing Steps ---
+def _clean_numeric_series(series: pd.Series, col_name: str) -> pd.Series:
+    """
+    Safely attempts to convert a column to numeric.
+    PROTECTIONS:
+    - Skips columns that look like IDs (e.g. contain 'accession', 'id', 'alias').
+    - Skips date columns (handled separately).
+    - Requires >80% valid conversion rate to accept changes.
+    """
+    col_lower = col_name.lower()
+    
+    # 1. SKIP IDENTIFIERS & DATES explicitly
+    # These often contain numbers but should REMAIN strings/objects
+    protected_terms = [
+        'accession', 'alias', 'id', 'name', 'sra', 'project', 'study', 'experiment', 'run', 
+        'sample', 'submission', 'ftp', 'url', 'link', 'md5', 'date', 'created', 'updated', 
+        'time', 'tax_lineage', 'refs', 'publication', 'citation', 'description'
+    ]
+    if any(term in col_lower for term in protected_terms):
+        return series
+
+    # 2. Standardize Missing Values
+    missing_indicators = ["nan", "NAN", "NaN", "Null", "null", "None", "none", "", " ", "Missing", "missing", "na", "NA", "unknown"]
+    clean = series.copy().astype(str).str.strip()
+    is_missing = clean.isin(missing_indicators) | clean.isna() | (clean.str.lower() == 'nan')
+    
+    # 3. Try Simple Coercion (e.g., "10.5", "-5")
+    numeric_simple = pd.to_numeric(clean, errors='coerce')
+    
+    non_missing_count = (~is_missing).sum()
+    if non_missing_count == 0:
+        return series # Return original if empty
+
+    valid_simple = (~numeric_simple.isna()).sum()
+    ratio_simple = valid_simple / non_missing_count
+
+    if ratio_simple > 0.90:
+        return numeric_simple
+
+    # 4. Aggressive Cleaning (Units)
+    # Only try this if it's NOT a protected ID column
+    # Regex: Extract first float/int (e.g., "10.5 cm" -> 10.5)
+    numeric_extracted = clean.str.extract(r'^(-?\d+\.?\d*)')[0]
+    numeric_aggressive = pd.to_numeric(numeric_extracted, errors='coerce')
+    
+    valid_aggressive = (~numeric_aggressive.isna()).sum()
+    ratio_aggressive = valid_aggressive / non_missing_count
+
+    # Higher threshold for aggressive cleaning to avoid accidents
+    if ratio_aggressive > 0.85:
+        # LOGGING: Only log if we actually changed non-numeric text to numbers
+        salvaged_mask = numeric_simple.isna() & ~numeric_aggressive.isna() & ~is_missing
+        if salvaged_mask.sum() > 0:
+            examples = series[salvaged_mask].head(3).to_dict()
+            logger.info(f"    🔧 Column '{col_name}': detected units/text mixed with numbers. Converting to numeric.")
+            logger.info(f"       Salvaged {salvaged_mask.sum()} values. Examples: {examples} -> {[numeric_aggressive[i] for i in examples]}")
+            
+        return numeric_aggressive
+
+    return series
+
+def clean_metadata(adata, config=None):
+    """
+    Standardizes metadata: handles missing values, unifies date formats, 
+    and enforces numeric types ONLY for measurement columns.
+    """
+    # 1. Standardize Missing Values (Global)
+    missing_indicators = ["nan", "Null", "null", "None", "none", "", " ", "Unknown", "unknown", "Missing"]
+    adata.obs = adata.obs.replace(missing_indicators, np.nan)
+    
+    # 2. Iterate Columns for Type Inference
+    for col in adata.obs.columns:
+        # Only process object/categorical columns that are NOT already numeric
+        if not pd.api.types.is_numeric_dtype(adata.obs[col]):
+            cleaned_series = _clean_numeric_series(adata.obs[col], col)
+            
+            # Update only if conversion happened
+            if pd.api.types.is_numeric_dtype(cleaned_series):
+                adata.obs[col] = cleaned_series
+
+    # 3. Standardize Dates (Vectorized)
+    # Look for 'date' or 'time' in name, but ignore numeric years (e.g. 2020) if possible
+    date_cols = [c for c in adata.obs.columns if any(x in c.lower() for x in ['date', 'time', 'created', 'updated'])]
+    
+    for col in date_cols:
+        # Skip if already numeric (like 'year' = 2020) unless it's a full timestamp
+        if pd.api.types.is_numeric_dtype(adata.obs[col]):
+             continue
+             
+        try:
+            # Force to datetime -> ISO format
+            adata.obs[col] = pd.to_datetime(adata.obs[col], errors='coerce').dt.strftime('%Y-%m-%d')
+        except Exception:
+            continue
+
+    return adata
+
+def parse_taxonomy(adata):
+    """
+    Parses taxonomy strings into ranks (Kingdom..Species).
+    Handles whitespace, prefixes, and 'unclassified' inheritance logic.
+    """
+    ranks = ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']
+    
+    # Identify taxonomy column
+    tax_col = next((c for c in adata.var.columns if c.lower() in ['taxon', 'taxonomy', 'lineage']), None)
+    if not tax_col:
+        for rank in ranks: adata.var[rank] = np.nan
+        return adata
+
+    try:
+        # 1. Split Taxonomy String
+        tax_df = adata.var[tax_col].astype(str).str.split(';', expand=True)
+        
+        if tax_df.shape[1] < len(ranks):
+            for i in range(tax_df.shape[1], len(ranks)):
+                tax_df[i] = np.nan
+        
+        tax_df = tax_df.iloc[:, :len(ranks)]
+        tax_df.columns = ranks
+
+        # 2. Vectorized Cleaning
+        for rank in ranks:
+            # Remove prefixes (d__, p__) and strip whitespace
+            tax_df[rank] = tax_df[rank].str.replace(r'^[kpcofgsd]__', '', regex=True).str.strip()
+
+        # 3. Handle 'Unclassified' / Missing Logic
+        bad_values = ['unclassified', 'uncultured', 'ambiguous_taxa', '', 'nan', 'None']
+        mask = tax_df.isin(bad_values) | tax_df.isna()
+        clean_df = tax_df.where(~mask, np.nan)
+        
+        # Forward fill last valid rank
+        filled_df = clean_df.ffill(axis=1)
+        filled_df = filled_df.fillna("Unclassified")
+        
+        # Construct final "Unclassified Rank" strings
+        final_df = clean_df.copy()
+        for col in ranks:
+            fallback = "Unclassified " + filled_df[col]
+            final_df[col] = clean_df[col].combine_first(fallback)
+
+        adata.var[ranks] = final_df[ranks]
+
+    except Exception as e:
+        logger.debug(f"Taxonomy parsing warning: {e}")
+        for rank in ranks:
+            if rank not in adata.var.columns: adata.var[rank] = np.nan
+
+    return adata
+
+def filter_samples_and_features(adata, config=None):
+    """
+    Removes Eukaryota, Mitochondria, Chloroplasts, and empty samples.
+    """
+    if adata.n_obs == 0: return adata
+    
+    to_drop = np.zeros(adata.n_vars, dtype=bool)
+
+    # 1. Check for Contaminants
+    if 'Kingdom' in adata.var.columns:
+        is_euk = adata.var['Kingdom'].astype(str).str.contains('Eukaryota|Eukarya', case=False, na=False)
+        to_drop = to_drop | is_euk
+
+    if 'Family' in adata.var.columns:
+        is_mito = adata.var['Family'].astype(str).str.contains('mitochondria', case=False, na=False)
+        to_drop = to_drop | is_mito
+        
+    if 'Order' in adata.var.columns:
+        is_chloro = adata.var['Order'].astype(str).str.contains('chloroplast', case=False, na=False)
+        to_drop = to_drop | is_chloro
+
+    if to_drop.sum() > 0:
+        logger.debug(f"Dropping {to_drop.sum()} features (Eukaryota/Mito/Chloro).")
+        adata = adata[:, ~to_drop].copy()
+
+    # 2. Filter Empty Samples
+    sc.pp.calculate_qc_metrics(adata, inplace=True, percent_top=None, log1p=False)
+    n_pre_samples = adata.n_obs
+    sc.pp.filter_cells(adata, min_counts=1)
+    
+    if n_pre_samples - adata.n_obs > 0:
+        logger.debug(f"Dropped {n_pre_samples - adata.n_obs} empty samples.")
+
+    return adata
+
+def get_cfg_value(cfg_obj, key, default=None):
+    """Helper to safely get config values from dict or object."""
+    if isinstance(cfg_obj, dict): return cfg_obj.get(key, default)
+    return getattr(cfg_obj, key, default)
+
+def filter_low_depth_and_prevalence(adata: ad.AnnData, config: Union[AppConfig, dict]) -> Union[ad.AnnData, None]:
+    """Filters by depth/prevalence."""
+    if isinstance(config, dict):
+        filter_config = config.get('preprocessing', {}).get('filter', {})
+    else:
+        filter_config = getattr(config.preprocessing, 'filter', None)
+
+    if not get_cfg_value(filter_config, 'enabled', False): return adata
+    
+    min_depth = get_cfg_value(filter_config, 'min_sequencing_depth', 5000)
+    min_prev = get_cfg_value(filter_config, 'min_sample_prevalence', 2)
+    
+    sc.settings.verbosity = 0
+    sc.pp.filter_cells(adata, min_counts=min_depth)
+    if adata.n_obs > 0:
+        actual_min = min(min_prev, adata.n_obs)
+        if actual_min > 1:
+            if issparse(adata.X): adata.X = csc_matrix(adata.X)
+            sc.pp.filter_genes(adata, min_cells=actual_min)
+            if issparse(adata.X): adata.X = csr_matrix(adata.X)
+    sc.pp.filter_cells(adata, min_counts=1)
+    
+    return adata

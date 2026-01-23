@@ -45,6 +45,15 @@ logger = get_logger("workflow_16s")
 # Suppress annoying implicit modification warnings from pandas
 pd.options.mode.chained_assignment = None
 
+import numpy as np
+import pandas as pd
+import anndata as ad
+from typing import Dict, List, Optional
+import logging
+
+# Setup logger
+logger = logging.getLogger("workflow_16s")
+from workflow_16s.utils.metadata_utils import filter_samples_and_features, clean_metadata, parse_taxonomy, validate_metadata
 def _get_file_hash(filepath: Path) -> str:
     """Fast hash of file stats to detect changes without reading content."""
     stats = filepath.stat()
@@ -177,10 +186,41 @@ def run_fast_load(workflow):
         try:
             workflow.adata = sc.read_h5ad(final_cache)
             logger.info(f"✅ Loaded {workflow.adata.n_obs} samples.")
+            # =========================================================
+            # [DEBUG] IMMEDIATE TAXONOMY CHECK
+            # =========================================================
+            print("\n" + "="*60)
+            print("🛑 DEBUG: TAXONOMY CHECK (Immediately after load)")
+            print(f"Observation (Sample) count: {workflow.adata.n_obs}")
+            print(f"Feature (ASV) count: {workflow.adata.n_vars}")
+            print(f"Variable columns (.var): {workflow.adata.var.columns.tolist()}")
+            
+            if 'Genus' in workflow.adata.var.columns:
+                print(f"\nValues in 'Genus' column (first 10):")
+                print(workflow.adata.var['Genus'].head(10))
+                print(f"\nUnique 'Genus' values (sample of 20):")
+                print(workflow.adata.var['Genus'].unique()[:20])
+                
+                # Check nulls
+                null_count = workflow.adata.var['Genus'].isna().sum()
+                empty_str_count = (workflow.adata.var['Genus'].astype(str) == '').sum()
+                print(f"\nNull count: {null_count}")
+                print(f"Empty string count: {empty_str_count}")
+                
+            else:
+                print("\n⚠️ 'Genus' column NOT found in .var!")
+                # Check for other likely candidates
+                for col in workflow.adata.var.columns:
+                    if 'genus' in col.lower():
+                        print(f"Found similar column '{col}':")
+                        print(workflow.adata.var[col].head(5))
+                        
+            print("="*60 + "\n")
+            # =========================================================
             return
         except Exception:
             logger.warning("Cached file corrupt. Reloading from source.")
-
+    
     # 2. Setup Tier 2 Cache (Individual Files)
     # Define the directory where _process_single_file will save pickles
     preproc_cache_dir = workflow.output_dir / ".cache" / "preprocessed_files"
