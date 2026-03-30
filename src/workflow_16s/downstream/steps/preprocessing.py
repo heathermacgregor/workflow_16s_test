@@ -1,64 +1,77 @@
-# ==================================================================================== #
-#                           downstream/steps/preprocessing.py
-# ==================================================================================== #
+# workflow_16s/downstream/steps/preprocessing.py
+""""""
 
-import math
-import csv
-import os
-import re
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
-from multiprocessing import cpu_count
-
-import anndata as ad
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-import scanpy as sc
-import seaborn as sns
-import scipy.sparse
-from scipy.sparse import csc_matrix, csr_matrix, issparse
-import joblib
-from joblib import Parallel, delayed
-
-from workflow_16s.config_schema import AppConfig
-from workflow_16s.utils.logger import get_logger
-from workflow_16s.utils.progress import get_progress_bar
-
-logger = get_logger("workflow_16s")
-
-from workflow_16s.downstream.utils import (
-    qc_metrics, export_fasta, clean_metadata, parse_taxonomy,
-    filter_samples_and_features, filter_low_depth_and_prevalence
+from scipy.sparse import csr_matrix, issparse
+from workflow_16s.utils.io.anndata import (
+    export_fasta
 )
 
-
-# --- Main Entry Point ---
-
+from workflow_16s.downstream.utils.adata_biology import (
+    clean_metadata,
+    filter_low_depth_and_prevalence,
+    filter_samples_and_features,
+    parse_taxonomy, 
+)
+from workflow_16s.downstream.visualization.qc import qc_metrics
+from workflow_16s.downstream.utils.helpers import AnalysisUtils
 def run_preprocessing_pipeline(workflow):
     """Main entry point for the preprocessing pipeline."""
-    logger.info("=== Starting Preprocessing Pipeline ===")
+    workflow.logger.info("=== Starting Preprocessing Pipeline ===")
     
     if workflow.adata is None:
-        logger.error("No AnnData object found in workflow. Skipping preprocessing.")
+        workflow.logger.error("No AnnData object found in workflow. Skipping preprocessing.")
         return
 
     workflow.adata = clean_metadata(workflow.adata, workflow.config)
-    workflow.adata = parse_taxonomy(workflow.adata)
+    
+    # Parse taxonomy if not already present, otherwise skip to avoid 
+    # overwriting existing taxonomy columns
+    genus_exists = 'Genus' in workflow.adata.var.columns
+    genus_has_data = genus_exists and not workflow.adata.var['Genus'].isnull().all()
+    
+    if genus_has_data:
+        workflow.logger.info("Taxonomy columns found (Genus with data). Skipping redundant parse_taxonomy step.")
+    else:
+        workflow.logger.info("Genus column missing or empty - parsing taxonomy...")
+        workflow.adata = parse_taxonomy(workflow.adata)
+        
+    # Filtering steps: remove samples and features based on config thresholds
     workflow.adata = filter_samples_and_features(workflow.adata, workflow.config)
     workflow.adata = filter_low_depth_and_prevalence(workflow.adata, workflow.config)
     
-    if workflow.adata.n_obs == 0:
-        logger.error("All samples removed during preprocessing.")
+    if workflow.adata is None or workflow.adata.n_obs == 0:
+        workflow.logger.error("All samples removed during preprocessing.")
         workflow.adata = None
         return
 
-    qc_metrics(workflow.adata, workflow.output_dir)
-    export_fasta(workflow.adata, workflow.config, workflow.output_dir)
-    
     # Ensure raw_counts layer exists for downstream steps 
     if 'raw_counts' not in workflow.adata.layers:
-        logger.info("Initializing 'raw_counts' layer from X (assuming raw inputs)...")
-        workflow.adata.layers['raw_counts'] = workflow.adata.X.copy()
+        workflow.logger.info("Initializing 'raw_counts' layer from X (assuming raw inputs)...")
+        if issparse(workflow.adata.X):
+            workflow.adata.layers['raw_counts'] = csr_matrix(workflow.adata.X)
+        else:
+            workflow.adata.layers['raw_counts'] = csr_matrix(np.array(workflow.adata.X))
     
-    logger.info("=== Preprocessing Pipeline Complete ===")
+    # Apply rCLR transformation (optional, configurable)
+    apply_rclr = getattr(workflow.config.downstream, 'apply_rclr_transformation', True)
+    if apply_rclr:
+        workflow.logger.info("Applying Robust CLR (rCLR) Transformation...")
+        transformed = AnalysisUtils.rclr_transform(workflow.adata)
+        if transformed is not None:
+            # rclr_transform returns sparse matrix to avoid memory explosion on large matrices
+            workflow.adata.X = transformed
+            workflow.logger.info(f"rCLR transformation complete. Matrix shape: {workflow.adata.X.shape}")
+        else:
+            workflow.logger.error("rCLR transformation failed.")
+    else:
+        workflow.logger.info("rCLR transformation disabled (apply_rclr_transformation=False in config)")
+
+
+    # Generate QC metrics
+    qc_metrics(workflow.adata, workflow.output_dir)
+
+    # Export FASTA for downstream steps
+    export_fasta(workflow.adata, workflow.config, workflow.output_dir)
+
+    workflow.logger.info("=== Preprocessing Pipeline Complete ===")

@@ -1,3 +1,4 @@
+# src/workflow_16s/visualization/_machine_learning.py
 # ===================================== IMPORTS ====================================== #
 
 # Standard Library Imports
@@ -79,6 +80,76 @@ def plot_confusion_matrix(cm: np.ndarray, output_path: Union[str, Path], class_n
     fig = apply_common_layout(fig, 'Predicted Label', 'Actual Label', 'Confusion Matrix') 
     fig = update_font_sizes(fig)
     fig.update_layout(autosize=True, height=height, width=width, xaxis=dict(side='bottom'))    
+    save_fig(fig, Path(output_path), formats=['png', 'html', 'json'])
+    return fig
+
+
+def plot_predicted_vs_actual(y_true: np.ndarray, y_pred: np.ndarray, output_path: Union[str, Path], height: int = DEFAULT_HEIGHT, width: int = DEFAULT_WIDTH_SQUARE) -> go.Figure:
+    """Plot Predicted vs Actual values with stylised reference line and boundary."""
+    fig = go.Figure()
+
+    # Scatter points - matching your color palette
+    fig.add_trace(go.Scatter(
+        x=y_true, y=y_pred,
+        mode='markers',
+        marker=dict(color='#1f77b4', opacity=0.6, size=10, line=dict(width=1, color='white')),
+        name='Samples',
+        hovertemplate="Actual: %{x}<br>Predicted: %{y}<extra></extra>"
+    ))
+
+    # Perfect prediction reference line
+    mn = min(y_true.min(), y_pred.min())
+    mx = max(y_true.max(), y_pred.max())
+    fig.add_trace(go.Scatter(
+        x=[mn, mx], y=[mn, mx],
+        mode='lines',
+        line=dict(color='#ff7f0e', width=2, dash='dash'),
+        name='Perfect Fit'
+    ))
+
+    # Stylistic additions to match Confusion Matrix
+    fig.update_layout(title_x=0.5, font=dict(size=12))
+    fig.add_shape(type="rect", xref="paper", yref="paper", x0=0, y0=0, x1=1, y1=1, line=dict(color="black", width=2))
+    
+    # Standard Workflow Wrappers
+    fig = apply_common_layout(fig, 'Actual Values', 'Predicted Values', 'Regression: Predicted vs Actual')
+    fig = update_font_sizes(fig)
+    fig.update_layout(autosize=True, height=height, width=width)
+    
+    save_fig(fig, Path(output_path), formats=['png', 'html', 'json'])
+    return fig
+
+
+def plot_residuals(y_true: np.ndarray, y_pred: np.ndarray, output_path: Union[str, Path], height: int = DEFAULT_HEIGHT, width: int = DEFAULT_WIDTH_SQUARE) -> go.Figure:
+    """Plot residuals with stylized horizontal zero-line and boundary."""
+    residuals = y_true - y_pred
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=y_pred, y=residuals,
+        mode='markers',
+        marker=dict(color='#d62728', opacity=0.6, size=10, line=dict(width=1, color='white')),
+        name='Residuals',
+        hovertemplate="Predicted: %{x}<br>Error: %{y}<extra></extra>"
+    ))
+
+    # Zero error line
+    fig.add_trace(go.Scatter(
+        x=[y_pred.min(), y_pred.max()], y=[0, 0],
+        mode='lines',
+        line=dict(color='black', width=2, dash='solid'),
+        showlegend=False
+    ))
+
+    # Stylistic additions to match Confusion Matrix
+    fig.update_layout(title_x=0.5, font=dict(size=12))
+    fig.add_shape(type="rect", xref="paper", yref="paper", x0=0, y0=0, x1=1, y1=1, line=dict(color="black", width=2))
+
+    # Standard Workflow Wrappers
+    fig = apply_common_layout(fig, 'Predicted Values', 'Residual (Actual - Predicted)', 'Residual Analysis')
+    fig = update_font_sizes(fig)
+    fig.update_layout(autosize=True, height=height, width=width)
+
     save_fig(fig, Path(output_path), formats=['png', 'html', 'json'])
     return fig
 

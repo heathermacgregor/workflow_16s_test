@@ -14,9 +14,7 @@ It is optimized for performance by:
 4. Providing a parallelized, 'batch' prediction method for processing
    large lists of taxa (e.g., from an AnnData object) using all CPU cores.
 """
-# ==================================================================================== #
-# Imports
-# ==================================================================================== #
+
 from __future__ import annotations
 import io
 import logging
@@ -31,16 +29,11 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
-from workflow_16s.utils.logger import get_logger, setup_logging
+from workflow_16s.utils.logger import get_logger
 from workflow_16s.utils.progress import get_progress_bar
 
-# ========================== INITIALISATION & CONFIGURATION ========================== #
 
-logger = get_logger()
-
-# ==================================================================================== #
 # Custom Exceptions
-# ==================================================================================== #
 class FaprotaxError(Exception):
     """Base exception for FaprotaxDB errors."""
 
@@ -50,9 +43,7 @@ class DownloaderError(FaprotaxError):
 class ParserError(FaprotaxError):
     """Raised during database file parsing."""
 
-# ==================================================================================== #
 # Main FaprotaxDB Class
-# ==================================================================================== #
 class FaprotaxDB:
     """
     A class to manage and query the FAPROTAX functional annotation database.
@@ -64,7 +55,8 @@ class FaprotaxDB:
     BASE_URL = "https://pages.uoregon.edu/slouca/LoucaLab/archive/FAPROTAX/lib/php/index.php?section=Download"
 
     def __init__(self, db_path: Union[str, Path, None] = None):
-        """Initializes the FaprotaxDB instance.
+        """
+        Initializes the FaprotaxDB instance.
 
         Args:
             db_path: 
@@ -81,8 +73,8 @@ class FaprotaxDB:
         self._group_metadata: Union[Dict, None] = None
         self._master_regex_compiled: Union[re.Pattern, None] = None
         self._clean_name_map: Union[Dict[str, str], None] = None # {clean_name: original_name}
-
-        logger.info(f"FAPROTAX DB directory set to: {self.db_dir}")
+        self.logger = get_logger("workflow_16s")
+        self.logger.info(f"FAPROTAX DB directory set to: {self.db_dir}")
 
     @property
     def data(self) -> Dict[str, List[str]]:
@@ -145,12 +137,12 @@ class FaprotaxDB:
             master_regex_str = "|".join(master_pattern_list)
             # Compile without ^ or $ anchors to allow matching anywhere
             self._master_regex_compiled = re.compile(master_regex_str, re.IGNORECASE)
-            logger.info("Master regex compiled.")
+            self.logger.info("Master regex compiled.")
         return self._master_regex_compiled
 
     def _download_latest(self) -> Path:
         """Scrapes, downloads, and extracts the latest FAPROTAX.txt file."""
-        logger.info("Searching for the latest FAPROTAX database download link...")
+        self.logger.info("Searching for the latest FAPROTAX database download link...")
         try:
             response = requests.get(self.BASE_URL, timeout=30)
             response.raise_for_status()
@@ -175,7 +167,7 @@ class FaprotaxDB:
             links.sort(key=lambda x: tuple(map(int, x[1].split('.'))), reverse=True)
             zip_url, version = links[0]
 
-            logger.info(f"Downloading FAPROTAX v{version} from {zip_url}")
+            self.logger.info(f"Downloading FAPROTAX v{version} from {zip_url}")
             with requests.get(zip_url, timeout=120, stream=False) as r:
                 r.raise_for_status()
                 zip_content = r.content
@@ -190,7 +182,7 @@ class FaprotaxDB:
                 self.db_dir.mkdir(parents=True, exist_ok=True)
                 with zf.open(target_member) as source, open(self.db_file, "wb") as target: target.write(source.read())
 
-                logger.info(f"Successfully saved FAPROTAX.txt to {self.db_file}")
+                self.logger.info(f"Successfully saved FAPROTAX.txt to {self.db_file}")
 
         except requests.RequestException as e: raise DownloaderError(f"Network error while downloading: {e}") from e
         except Exception as e: raise DownloaderError(f"Error during FAPROTAX download/extraction: {e}") from e
@@ -224,9 +216,9 @@ class FaprotaxDB:
         """
         if not self.db_file.exists():
             try: self._download_latest()
-            except DownloaderError as e: logger.error(f"Failed to download FAPROTAX DB: {e}"); return {}, {}
+            except DownloaderError as e: self.logger.error(f"Failed to download FAPROTAX DB: {e}"); return {}, {}
 
-        logger.info(f"Parsing FAPROTAX database from {self.db_file}...")
+        self.logger.info(f"Parsing FAPROTAX database from {self.db_file}...")
 
         try:
             # === Pass 1: Parse raw groups and operations (using blank lines) ===
@@ -244,7 +236,7 @@ class FaprotaxDB:
                         if current_group:
                             # Save the completed group
                             raw_groups[current_group] = {"operations": current_operations.copy()}
-                            logger.debug(f"Finished group: {current_group} with {len(current_operations)} ops.")
+                            self.logger.debug(f"Finished group: {current_group} with {len(current_operations)} ops.")
                         # Reset for the next block
                         current_group = None
                         current_operations = []
@@ -261,7 +253,7 @@ class FaprotaxDB:
                         if len(parts) > 1: metadata = self._parse_metadata(parts[1])
                         group_metadata[group_name] = metadata
                         current_group = group_name
-                        logger.debug(f"Found group: {group_name}")
+                        self.logger.debug(f"Found group: {group_name}")
 
                     # Otherwise, this line is an operation for the current group
                     else:
@@ -285,9 +277,9 @@ class FaprotaxDB:
             # Save the very last group in the file
             if current_group:
                 raw_groups[current_group] = {"operations": current_operations.copy()}
-                logger.debug(f"Finished last group: {current_group} with {len(current_operations)} ops.")
+                self.logger.debug(f"Finished last group: {current_group} with {len(current_operations)} ops.")
 
-            logger.info(f"Parsed {len(raw_groups)} group definitions with metadata.")
+            self.logger.info(f"Parsed {len(raw_groups)} group definitions with metadata.")
 
             # === Pass 2: Resolve group hierarchies ===
             direct_taxa: Dict[str, Set[Tuple[str, str]]] = {}
@@ -299,8 +291,8 @@ class FaprotaxDB:
             @lru_cache(maxsize=None)
             def resolve_group(group_name: str, visited: frozenset) -> Set[Tuple[str, str]]:
                 """Recursively resolve a group to its constituent taxa."""
-                if group_name not in raw_groups: logger.warning(f"Group '{group_name}' not found in raw groups"); return set()
-                if group_name in visited: logger.warning(f"Circular dependency detected in group: {group_name}"); return set()
+                if group_name not in raw_groups: self.logger.warning(f"Group '{group_name}' not found in raw groups"); return set()
+                if group_name in visited: self.logger.warning(f"Circular dependency detected in group: {group_name}"); return set()
 
                 new_visited = visited | {group_name}
                 result = set(direct_taxa.get(group_name, set()))
@@ -336,10 +328,10 @@ class FaprotaxDB:
                     resolved_db_patterns[group_name] = patterns
                     progress.update(task, advance=1)
 
-            logger.info(f"Successfully resolved {all_groups_resolved} functional groups.")
+            self.logger.info(f"Successfully resolved {all_groups_resolved} functional groups.")
             return resolved_db_patterns, group_metadata
 
-        except FileNotFoundError: logger.error(f"Database file not found at {self.db_file}."); return {}, {}
+        except FileNotFoundError: self.logger.error(f"Database file not found at {self.db_file}."); return {}, {}
         except Exception as e: raise ParserError(f"Failed to parse FAPROTAX.txt: {e}") from e
 
     @lru_cache(maxsize=4096)
@@ -386,13 +378,13 @@ class FaprotaxDB:
 
         # We process the unique set of taxa to leverage the lru_cache and minimize work for the subprocesses.
         unique_taxa = sorted(list(set(taxa_list)))
-        logger.info(f"Predicting functions for {len(unique_taxa)} unique taxa...")
+        self.logger.info(f"Predicting functions for {len(unique_taxa)} unique taxa...")
 
         with Pool(processes=processes) as pool:
             # pool.map runs self.predict_functions (which is cached) on every item in unique_taxa
             results = pool.map(self.predict_functions, unique_taxa)
 
-        logger.info("Batch prediction complete. Mapping results...")
+        self.logger.info("Batch prediction complete. Mapping results...")
 
         # Create a fast lookup map: {taxon_string: [function_list]}
         result_map = dict(zip(unique_taxa, results))

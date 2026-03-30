@@ -9,10 +9,13 @@ microbial community analysis pipeline, including:
 """
 
 from .ingestion import (
-    run_fast_load, run_filter_empty, find_conda_env_by_substring
+    load_data, cleanup, find_conda_env_by_substring
 )
 from .preprocessing import run_preprocessing_pipeline
 from .backfill import run_data_backfill
+from .enrichment_proxy_columns import (
+    run_proxy_columns_enrichment, generate_proxy_columns_report
+)
 from .analysis import run_analysis_suite
 from .synthesis import (
     run_results_synthesis, handle_strategy_impact_plot
@@ -29,11 +32,14 @@ except ImportError:
 
 __all__ = [
     # Ingestion
-    'run_fast_load',
-    'run_filter_empty',
+    'load_data',
+    'cleanup',
     'find_conda_env_by_substring',
     # Preprocessing
     'run_preprocessing_pipeline',
+    # Enrichment
+    'run_proxy_columns_enrichment',
+    'generate_proxy_columns_report',
     # QC (optional)
     'run_comprehensive_qc',
     'run_semantic_filtering',

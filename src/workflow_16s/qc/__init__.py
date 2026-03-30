@@ -14,10 +14,10 @@ Quick start:
 """
 
 from .primer_qc import PrimerQC
-from .contamination_enhanced import (
+from .contamination import (
     detect_contaminants_reference_based,
     detect_cross_sample_contamination,
-    remove_contaminants_enhanced
+    remove_contaminants as remove_contaminants_enhanced
 )
 from .pipeline import ComprehensiveQC, quick_qc
 from .validation import (

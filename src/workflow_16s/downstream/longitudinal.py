@@ -40,7 +40,6 @@ Example:
     >>> clusters = trajectory_clustering(adata, time_col='days', n_clusters=4)
 """
 
-import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -55,26 +54,15 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from statsmodels.stats.multitest import multipletests
 
-logger = logging.getLogger('workflow_16s')
-
-# Check for R and rpy2
-try:
-    import rpy2.robjects as ro
-    from rpy2.robjects import pandas2ri, conversion
-    from rpy2.robjects.packages import importr
-    
-    # Use context manager instead of deprecated activate()
-    R_AVAILABLE = True
-except ImportError:
-    R_AVAILABLE = False
-    logger.warning("rpy2 not available. R-based longitudinal methods will not work.")
+from workflow_16s.utils.logger import get_logger
 
 
 def _check_r_package(package_name: str) -> bool:
     """Check if an R package is installed."""
-    if not R_AVAILABLE:
-        return False
     try:
+        import rpy2.robjects as ro
+        from rpy2.robjects import pandas2ri, conversion
+        from rpy2.robjects.packages import importr
         importr(package_name)
         return True
     except Exception:
@@ -122,7 +110,7 @@ def check_temporal_structure(
         'time_range': (adata.obs[time_col].min(), adata.obs[time_col].max()),
         'is_longitudinal': repeated_subjects > 0
     }
-    
+    logger = get_logger("workflow_16s")
     logger.info("Temporal structure:")
     logger.info(f"  Subjects: {info['n_subjects']}")
     logger.info(f"  Subjects with repeated measures: {info['n_repeated_subjects']}")
@@ -167,6 +155,10 @@ def run_zibr(
     Raises:
         RuntimeError: If R or ZIBR package is not available
     """
+    logger = get_logger("workflow_16s")
+    import rpy2.robjects as ro
+    from rpy2.robjects import pandas2ri, conversion
+    from rpy2.robjects.packages import importr
     if not _check_r_package('ZIBR'):
         raise RuntimeError(
             "ZIBR R package not available. Install with:\n"
@@ -323,6 +315,10 @@ def run_maaslin2_longitudinal(
     Raises:
         RuntimeError: If R or Maaslin2 is not available
     """
+    logger = get_logger("workflow_16s")
+    import rpy2.robjects as ro
+    from rpy2.robjects import pandas2ri, conversion
+    from rpy2.robjects.packages import importr
     if not _check_r_package('Maaslin2'):
         raise RuntimeError(
             "Maaslin2 R package not available. Install with:\n"
@@ -421,6 +417,10 @@ def trajectory_clustering(
     Returns:
         Dictionary with clustering results
     """
+    logger = get_logger("workflow_16s")
+    import rpy2.robjects as ro
+    from rpy2.robjects import pandas2ri, conversion
+    from rpy2.robjects.packages import importr
     logger.info(f"Clustering temporal trajectories (n_clusters={n_clusters})")
     
     # Get features to use
@@ -504,8 +504,11 @@ def calculate_temporal_stability(
     Returns:
         DataFrame with stability metrics per subject
     """
+    import rpy2.robjects as ro
+    from rpy2.robjects import pandas2ri, conversion
+    from rpy2.robjects.packages import importr
     from sklearn.metrics.pairwise import pairwise_distances
-    
+    logger = get_logger("workflow_16s")
     logger.info(f"Calculating temporal stability (metric={metric})")
     
     stability_results = []
@@ -574,6 +577,9 @@ def plot_temporal_trajectories(
     Returns:
         Plotly figure object
     """
+    import rpy2.robjects as ro
+    from rpy2.robjects import pandas2ri, conversion
+    from rpy2.robjects.packages import importr
     # Prepare data
     plot_data = pd.DataFrame({
         'time': adata.obs[time_col].values,
@@ -607,6 +613,7 @@ def plot_temporal_trajectories(
     
     if output_path:
         fig.write_html(output_path)
+        logger = get_logger("workflow_16s")
         logger.info(f"Trajectory plot saved to {output_path}")
     
     return fig
@@ -636,6 +643,10 @@ def longitudinal_analysis_workflow(
     Returns:
         Dictionary with analysis results
     """
+    import rpy2.robjects as ro
+    from rpy2.robjects import pandas2ri, conversion
+    from rpy2.robjects.packages import importr
+    logger = get_logger("workflow_16s")
     logger.info("="*60)
     logger.info("LONGITUDINAL MICROBIOME ANALYSIS WORKFLOW")
     logger.info("="*60)

@@ -43,11 +43,14 @@ class PrimerQC:
     # PhiX spike-in (first 50bp)
     PHIX_SEQUENCE = 'GAGTTTTATCGCTTCCATGACGCAGAAGTTAACACTTTCGGATATTTCT'
     
-    def __init__(self, primers: Dict[str, str], 
-                 max_error_rate: float = 0.15,
-                 min_overlap: int = 10,
-                 max_reads: int = 10000,
-                 n_cores: int = 4):
+    def __init__(
+        self,
+        primers: Dict[str, str], 
+        max_error_rate: float = 0.15,
+        min_overlap: int = 10,
+        max_reads: int = 10000,
+        n_cores: int = 4
+    ):
         """
         Initialize PrimerQC.
         
@@ -104,10 +107,10 @@ class PrimerQC:
         logger.info(f"Regex primer check: {fastq_path}")
         
         results = defaultdict(lambda: {
-            'forward_5prime': 0,
-            'forward_3prime': 0,
-            'reverse_comp_5prime': 0,
-            'reverse_comp_3prime': 0,
+            'forward_5prime': 0.0,
+            'forward_3prime': 0.0,
+            'reverse_comp_5prime': 0.0,
+            'reverse_comp_3prime': 0.0,
             'total_checked': 0
         })
         
@@ -140,8 +143,10 @@ class PrimerQC:
         for primer_name in results:
             total = results[primer_name]['total_checked']
             if total > 0:
-                for key in ['forward_5prime', 'forward_3prime', 
-                           'reverse_comp_5prime', 'reverse_comp_3prime']:
+                for key in [
+                    'forward_5prime', 'forward_3prime', 
+                    'reverse_comp_5prime', 'reverse_comp_3prime'
+                ]:
                     results[primer_name][key] = results[primer_name][key] / total
         
         return dict(results)
@@ -204,7 +209,7 @@ class PrimerQC:
     
     def _parse_cutadapt_output(self, stderr: str) -> Dict[str, Any]:
         """Parse CutAdapt stderr output for statistics."""
-        stats = {
+        stats: Dict[str, Any] = {
             'total_reads': 0,
             'reads_with_adapters': 0,
             'basepairs_removed': 0,
@@ -269,12 +274,17 @@ class PrimerQC:
         
         # Convert to frequencies
         if total_reads > 0:
-            contamination = {k: v/total_reads for k, v in contamination.items()}
+            contamination = {k: float(v)/total_reads for k, v in contamination.items()}
+        else:
+            contamination = {k: 0.0 for k in contamination}
         
         return contamination
     
-    def validate_trimming(self, pre_trim_fastq: Union[str, Path], 
-                         post_trim_fastq: Union[str, Path]) -> Dict[str, Any]:
+    def validate_trimming(
+        self, 
+        pre_trim_fastq: Union[str, Path], 
+        post_trim_fastq: Union[str, Path]
+    ) -> Dict[str, Any]:
         """
         Validate that primer trimming actually worked.
         
@@ -423,8 +433,11 @@ class PrimerQC:
         
         return assessment
     
-    def batch_check(self, fastq_files: List[Union[str, Path]], 
-                   output_report: Optional[Union[str, Path]] = None) -> pd.DataFrame:
+    def batch_check(
+        self, 
+        fastq_files: List[Union[str, Path]], 
+        output_report: Optional[Union[str, Path]] = None
+    ) -> pd.DataFrame:
         """
         Run primer QC on multiple FASTQ files in parallel.
         

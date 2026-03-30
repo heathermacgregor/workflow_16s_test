@@ -1,17 +1,16 @@
+# workflow_16s/utils/validation.py
 """
 Results validation utilities for workflow quality checks.
 
 Provides validation checks for analysis results to catch common issues.
 """
-
-import logging
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Any, Optional
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger("workflow_16s")
+import numpy as np
+import pandas as pd
 
+from workflow_16s.utils.logger import get_logger
 
 class ResultsValidator:
     """Validate analysis results for common issues."""
@@ -19,7 +18,7 @@ class ResultsValidator:
     def __init__(self):
         self.warnings = []
         self.errors = []
-        
+        self.logger = get_logger("workflow_16s")
     def validate_dataframe(
         self, 
         df: pd.DataFrame, 
@@ -310,7 +309,7 @@ def validate_results(
     
     # Generate report
     summary = validator.get_summary()
-    logger.info("\n" + summary)
+    get_logger("workflow_16s").info("\n" + summary)
     
     if output_dir:
         report_path = output_dir / "validation_report.txt"

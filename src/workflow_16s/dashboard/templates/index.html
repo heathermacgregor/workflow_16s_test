@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AmpliScout Process Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background: #0f172a; color: #f8fafc; font-family: 'Inter', sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        nav { background: #1e293b; border-bottom: 1px solid #334155; padding: 0.75rem 1.5rem; display: flex; justify-content: space-between; align-items: center; z-index: 10; }
+        main { display: flex; flex: 1; min-height: 0; }
+        
+        #workspace { flex: 1; padding: 1.5rem; overflow-y: auto; display: flex; flex-direction: column; gap: 1.5rem; }
+        
+        #log-sidebar {
+            width: 35%; min-width: 300px; max-width: 70%;
+            background: #020617; border-left: 2px solid #334155;
+            resize: horizontal; direction: rtl; overflow: hidden;
+            display: flex; flex-direction: column;
+        }
+        #log-inner { direction: ltr; display: flex; flex-direction: column; height: 100%; width: 100%; }
+        #log-terminal { 
+            flex: 1; overflow-y: auto; padding: 1rem; font-family: 'Fira Code', monospace; 
+            font-size: 12px; color: #10b981; line-height: 1.5; word-wrap: break-word;
+        }
+        @media (max-width: 1024px) { #log-sidebar { display: none; } }
+
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 0.75rem; padding: 1.25rem; display: flex; flex-direction: column; }
+        .card-body { flex: 1; overflow-y: auto; min-height: 0; }
+        
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+        .stat-value { font-size: 1.75rem; font-weight: 800; color: #38bdf8; }
+        .progress-bg { background: #334155; border-radius: 999px; height: 6px; width: 100%; margin-top: 4px; overflow: hidden; }
+        .progress-fill { background: #3b82f6; height: 100%; transition: width 0.3s ease; }
+        
+        #plot-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 50; padding: 2rem; }
+        #plot-modal.active { display: flex; justify-content: center; align-items: center; }
+        .modal-content { background: #1e293b; width: 90%; height: 90%; border-radius: 1rem; display: flex; flex-direction: column; padding: 1rem; }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="flex items-center gap-3">
+        <i class="fa-solid fa-satellite-dish text-blue-500 text-xl"></i>
+        <h1 class="text-md font-bold tracking-wider">AmpliScout <span class="text-slate-400 font-normal">Process Monitor</span></h1>
+    </div>
+    <div class="flex gap-3">
+        <button onclick="openModal()" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded text-xs font-bold transition"><i class="fa-solid fa-chart-pie mr-2"></i> Expanded Analytics</button>
+        <button onclick="window.open('/config', '_blank', 'width=900,height=800')" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-xs font-bold transition"><i class="fa-solid fa-file-code mr-2"></i> View Configuration</button>
+    </div>
+</nav>
+
+<main>
+    <div id="workspace">
+        <div class="grid grid-cols-4 gap-4">
+            <div class="card col-span-2">
+                <div class="flex justify-between mb-1">
+                    <div class="text-xs text-slate-400 font-bold">GLOBAL PIPELINE PROGRESS</div>
+                    <div id="global-pct" class="text-xs text-blue-400 font-bold">0%</div>
+                </div>
+                <div class="progress-bg !height-3 mt-2"><div id="global-fill" class="progress-fill bg-blue-500" style="width: 0%"></div></div>
+                <div id="global-text" class="text-[10px] text-slate-500 mt-2 text-right">0 / 0 Datasets Completed</div>
+            </div>
+            <div class="card"><div class="text-xs text-slate-400 font-bold mb-1">TOTAL SAMPLES</div><div id="stat-samples" class="stat-value text-emerald-400">0</div></div>
+            <div class="card"><div class="text-xs text-slate-400 font-bold mb-1">TOTAL ASV FEATURES</div><div id="stat-features" class="stat-value text-purple-400">0</div></div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 h-64 shrink-0">
+            <div class="card">
+                <h3 class="text-xs font-bold uppercase text-slate-400 mb-3"><i class="fa-solid fa-bars-progress mr-2"></i> Active Tasks</h3>
+                <div id="progress-bars" class="card-body space-y-4">Waiting for pipeline...</div>
+            </div>
+            
+            <div class="card">
+                <h3 class="text-xs font-bold uppercase text-slate-400 mb-3"><i class="fa-solid fa-microchip mr-2"></i> Process Tree (htop)</h3>
+                <div class="card-body">
+                    <table class="w-full text-left text-xs">
+                        <thead class="text-slate-400 sticky top-0 bg-[#1e293b]"><tr><th class="pb-2">PID</th><th class="pb-2">Process</th><th class="pb-2">CPU%</th><th class="pb-2">RAM%</th></tr></thead>
+                        <tbody id="htop-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 flex-1 min-h-[300px]">
+            <div class="card">
+                <h3 class="text-xs font-bold uppercase text-slate-400 mb-3"><i class="fa-solid fa-map-location-dot mr-2"></i> Geospatial Discovery Map</h3>
+                <div id="map-div" class="w-full h-full rounded bg-slate-800"></div>
+            </div>
+            <div class="card">
+                <h3 class="text-xs font-bold uppercase text-slate-400 mb-3">
+                    <i class="fa-solid fa-fire text-orange-500 mr-2"></i> NFC Hot Sites (Top 10)
+                </h3>
+                <div class="card-body">
+                    <table class="w-full text-left text-xs">
+                        <tbody id="hot-sites-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="log-sidebar">
+        <div id="log-inner">
+            <div class="bg-slate-900 p-2 border-b border-slate-700 flex justify-between items-center shrink-0">
+                <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest"><i class="fa-solid fa-terminal mr-2"></i> Live Console Stream</span>
+            </div>
+            <div id="log-terminal"></div>
+        </div>
+    </div>
+</main>
+
+<div id="plot-modal">
+    <div class="modal-content relative">
+        <button onclick="closeModal()" class="absolute top-4 right-4 text-slate-400 hover:text-white text-xl"><i class="fa-solid fa-xmark"></i></button>
+        <h2 class="text-lg font-bold mb-4">Expanded Analytics & Provenance</h2>
+        <div class="grid grid-cols-2 grid-rows-2 gap-4 flex-1 min-h-0">
+            <div id="plot-composition" class="bg-slate-800 rounded h-full"></div>
+            <div id="plot-cache-history" class="bg-slate-800 rounded h-full"></div>
+            <div id="plot-provenance-pie" class="bg-slate-800 rounded h-full"></div>
+            <div id="plot-node-bar" class="bg-slate-800 rounded h-full"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const pLayout = {
+        paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+        font: { color: '#94a3b8' }, margin: { t: 40, b: 30, l: 40, r: 30 },
+        xaxis: { gridcolor: '#334155' }, yaxis: { gridcolor: '#334155' }
+    };
+
+    let cacheHistoryX = [];
+    let cacheHistoryY = [];
+    let targetTotal = 1; // Prevent div by 0
+
+    async function fetchTelemetry() {
+        const res = await fetch('/api/telemetry');
+        const data = await res.json();
+        
+        document.getElementById('stat-samples').innerText = (data.h5ad_stats.total_samples || 0).toLocaleString();
+        document.getElementById('stat-features').innerText = (data.h5ad_stats.total_features || 0).toLocaleString();
+        
+        const totalCache = (data.cache_counts.ena_metadata || 0) + (data.cache_counts.partitions || 0);
+
+        if(totalCache > 0) {
+            cacheHistoryX.push(new Date());
+            cacheHistoryY.push(totalCache);
+            if(cacheHistoryX.length > 100) { cacheHistoryX.shift(); cacheHistoryY.shift(); }
+        }
+
+        // Target capture from Workflow State
+        if(data.workflow_state && data.workflow_state.ui_stats) {
+            targetTotal = data.workflow_state.ui_stats.sieve_passed || 530; 
+        }
+
+        if (data.hot_sites && data.hot_sites.length > 0) {
+            document.getElementById('hot-sites-body').innerHTML = data.hot_sites.map(s => `
+                <tr class="border-b border-slate-700/30 last:border-0">
+                    <td class="py-2 font-semibold text-slate-200">${s.facility}</td>
+                    <td class="py-2 text-right text-orange-400 font-mono">${s.hit_count}</td>
+                </tr>
+            `).join('');
+        }
+
+        document.getElementById('htop-body').innerHTML = data.processes.map(p => `
+            <tr class="border-b border-slate-700/50 last:border-0">
+                <td class="py-1.5 text-slate-500">${p.pid}</td>
+                <td class="py-1.5 font-bold ${p.name.includes('Master') ? 'text-blue-400' : 'text-slate-300'} truncate max-w-[150px]">${p.name}</td>
+                <td class="py-1.5 ${p.cpu > 80 ? 'text-red-400' : ''}">${p.cpu.toFixed(1)}%</td>
+                <td class="py-1.5">${p.ram.toFixed(1)}%</td>
+            </tr>
+        `).join('');
+
+        if(data.workflow_state && data.workflow_state.tasks) {
+            document.getElementById('progress-bars').innerHTML = data.workflow_state.tasks.map(t => `
+                <div>
+                    <div class="flex justify-between text-[11px] font-bold text-slate-300 mb-1">
+                        <span>${t.description.replace(/\[.*?\]/g, '')}</span>
+                        <span class="text-slate-400">${t.completed}/${t.total} (${t.percentage}%)</span>
+                    </div>
+                    <div class="progress-bg"><div class="progress-fill" style="width: ${t.percentage}%"></div></div>
+                </div>
+            `).join('');
+        }
+    }
+
+    async function fetchHeavyViz() {
+        // 1. Map & Composition
+        const res = await fetch('/api/data_viz');
+        const data = await res.json();
+        
+        if(data.map_points.length > 0) {
+            const lats = data.map_points.map(d => d.lat);
+            const lons = data.map_points.map(d => d.lon);
+            const text = data.map_points.map(d => `<b>${d.dataset_id}</b><br>${d.study_accession}<br>${d.env_broad_scale || ''}`);
+            
+            const mapData = [{
+                type: 'scattergeo', mode: 'markers', lat: lats, lon: lons, text: text,
+                marker: { size: 6, color: '#3b82f6', opacity: 0.7, line: {width: 1, color: '#fff'} },
+                hoverinfo: 'text'
+            }];
+            const mapLayout = {
+                ...pLayout, margin: {t:0, b:0, l:0, r:0},
+                geo: { scope: 'world', showland: true, landcolor: '#334155', showocean: true, oceancolor: '#0f172a', bgcolor: 'transparent' }
+            };
+            Plotly.newPlot('map-div', mapData, mapLayout, {displayModeBar: false});
+        }
+
+        const envs = data.composition.environments || {};
+        if(Object.keys(envs).length > 0) {
+            const pieData = [{ values: Object.values(envs), labels: Object.keys(envs), type: 'pie', hole: 0.4, textinfo: 'none' }];
+            Plotly.newPlot('plot-composition', pieData, {...pLayout, title: 'Environment Broad Scale Composition'});
+        }
+
+        // 2. Fetch Provenance Data
+        const pRes = await fetch('/api/provenance');
+        const pData = await pRes.json();
+        
+        // Update Global Loading Bar
+        const processed = pData.total_processed || 0;
+        const pct = Math.min(100, Math.round((processed / Math.max(1, targetTotal)) * 100));
+        document.getElementById('global-fill').style.width = `${pct}%`;
+        document.getElementById('global-pct').innerText = `${pct}%`;
+        document.getElementById('global-text').innerText = `${processed} / ${targetTotal} Datasets Processed`;
+
+        // Render Provenance Errors Pie Chart
+        const errColors = {
+            'SUCCESS': '#10b981', 'FAIL_LOW_COUNT': '#eab308', 
+            'FAIL_METADATA': '#f97316', 'FAIL_TAXONOMY': '#ef4444', 
+            'FAIL_DENOISE': '#b91c1c', 'FAIL_IMPORT': '#7f1d1d'
+        };
+        const eLabels = Object.keys(pData.errors);
+        const eValues = Object.values(pData.errors);
+        const eColorsArray = eLabels.map(l => errColors[l] || '#64748b');
+
+        if(eLabels.length > 0) {
+            const errData = [{
+                values: eValues, labels: eLabels, type: 'pie', hole: 0.4,
+                marker: { colors: eColorsArray }, textinfo: 'label+percent'
+            }];
+            Plotly.newPlot('plot-provenance-pie', errData, {...pLayout, title: 'Pipeline Validation (X/Y/Z)'});
+        }
+
+        // Render Node Usage Bar Chart
+        const nLabels = Object.keys(pData.nodes);
+        const nValues = Object.values(pData.nodes);
+        if(nLabels.length > 0) {
+            const nodeData = [{
+                x: nLabels, y: nValues, type: 'bar', marker: { color: '#8b5cf6' }
+            }];
+            Plotly.newPlot('plot-node-bar', nodeData, {...pLayout, title: 'Compute Node Utilization'});
+        }
+    }
+
+    function updateLiveChart() {
+        if(cacheHistoryX.length === 0) return;
+        const trace = {
+            x: cacheHistoryX, y: cacheHistoryY, type: 'scatter', mode: 'lines',
+            line: {color: '#f59e0b', width: 2}, hoverinfo: 'y'
+        };
+        Plotly.newPlot('plot-cache-history', [trace], {...pLayout, title: 'Database Cache Growth Over Time'});
+    }
+
+    function openModal() { document.getElementById('plot-modal').classList.add('active'); updateLiveChart(); }
+    function closeModal() { document.getElementById('plot-modal').classList.remove('active'); }
+
+    const logBox = document.getElementById('log-terminal');
+    const source = new EventSource("/api/stream_logs");
+    source.onmessage = (e) => {
+        let text = e.data;
+        if(text.includes("[INFO]")) text = `<span class="text-emerald-400">${text}</span>`;
+        else if(text.includes("[WARNING]")) text = `<span class="text-amber-400">${text}</span>`;
+        else if(text.includes("[ERROR]") || text.includes("[FAIL]")) text = `<span class="text-red-400 font-bold">${text}</span>`;
+        logBox.innerHTML += text + "<br>";
+        logBox.scrollTo(0, logBox.scrollHeight);
+    };
+
+    setInterval(fetchTelemetry, 1000);
+    setInterval(fetchHeavyViz, 10000);
+    fetchTelemetry(); fetchHeavyViz();
+</script>
+</body>
+</html>

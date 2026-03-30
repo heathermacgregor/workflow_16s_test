@@ -31,3 +31,7 @@ def get_config(
     config_dir = config_path.resolve().parent
     config = resolve_relative_paths(config, config_dir)
     return config
+
+
+# Compatibility alias for load_config
+load_config = get_config

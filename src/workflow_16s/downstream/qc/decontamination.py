@@ -37,7 +37,6 @@ Example:
     ... )
 """
 
-import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
 
@@ -47,21 +46,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-
-logger = logging.getLogger('workflow_16s')
-
-# Check for R and rpy2
-try:
-    import rpy2.robjects as ro
-    from rpy2.robjects import pandas2ri
-    from rpy2.robjects.packages import importr
-    from rpy2.robjects import conversion
-    
-    # Use context manager instead of deprecated activate()
-    R_AVAILABLE = True
-except ImportError:
-    R_AVAILABLE = False
-    logger.warning("rpy2 not available. Decontam functions will not work.")
+from workflow_16s.utils.logger import get_logger
 
 
 def _check_decontam_available() -> bool:
@@ -70,11 +55,12 @@ def _check_decontam_available() -> bool:
     
     Returns:
         True if decontam is installed, False otherwise
-    """
-    if not R_AVAILABLE:
-        return False
-    
+    """    
     try:
+        import rpy2.robjects as ro
+        from rpy2.robjects import pandas2ri
+        from rpy2.robjects.packages import importr
+        from rpy2.robjects import conversion
         ro.r('library(decontam)')
         return True
     except Exception:
@@ -111,6 +97,10 @@ def identify_contaminants(
         RuntimeError: If R or decontam package is not available
         ValueError: If required parameters for method are missing
     """
+    import rpy2.robjects as ro
+    from rpy2.robjects import pandas2ri
+    from rpy2.robjects.packages import importr
+    from rpy2.robjects import conversion
     if not _check_decontam_available():
         raise RuntimeError(
             "R decontam package not available. Install with:\n"
@@ -126,7 +116,7 @@ def identify_contaminants(
     
     if method in ['prevalence', 'combined'] and (control_column is None or control_value is None):
         raise ValueError("control_column and control_value required for prevalence-based detection")
-    
+    logger = get_logger('workflow_16s')
     logger.info(f"Running decontam with method={method}, threshold={threshold}")
     
     # Prepare data
@@ -183,6 +173,10 @@ def _run_frequency_method(
     normalize: bool
 ) -> pd.DataFrame:
     """Run frequency-based decontam method."""
+    import rpy2.robjects as ro
+    from rpy2.robjects import pandas2ri
+    from rpy2.robjects.packages import importr
+    from rpy2.robjects import conversion
     with conversion.localconverter(ro.default_converter + pandas2ri.converter):
         # Get DNA concentrations
         dna_conc = adata.obs[dna_conc_column].values
@@ -201,6 +195,7 @@ def _run_frequency_method(
         cmd += ")"
         
         # Run decontam
+        logger = get_logger('workflow_16s')
         logger.debug(f"Running R command: {cmd}")
         r_results = ro.r(cmd)
         
@@ -224,6 +219,10 @@ def _run_prevalence_method(
     normalize: bool
 ) -> pd.DataFrame:
     """Run prevalence-based decontam method."""
+    import rpy2.robjects as ro
+    from rpy2.robjects import pandas2ri
+    from rpy2.robjects.packages import importr
+    from rpy2.robjects import conversion
     with conversion.localconverter(ro.default_converter + pandas2ri.converter):
         # Create negative indicator
         if isinstance(control_value, str):
@@ -245,6 +244,7 @@ def _run_prevalence_method(
         cmd += ")"
         
         # Run decontam
+        logger = get_logger('workflow_16s')
         logger.debug(f"Running R command: {cmd}")
         r_results = ro.r(cmd)
         
@@ -316,6 +316,7 @@ def remove_contaminants(
     keep_features = [f for f in adata.var_names if f not in contaminant_names]
     adata = adata[:, keep_features]
     
+    logger = get_logger('workflow_16s')
     logger.info(f"Removed {len(contaminant_names)} contaminant features")
     
     return adata
@@ -341,6 +342,7 @@ def plot_decontam_scores(
     Returns:
         Plotly figure object
     """
+    logger = get_logger('workflow_16s')
     # Select appropriate p-value column
     if method == 'frequency':
         p_col = 'p_freq_adj'
@@ -558,6 +560,7 @@ def decontamination_workflow(
             - 'cleaned_data': AnnData with contaminants removed (if remove=True)
             - 'figures': Dictionary of plotly figures
     """
+    logger = get_logger('workflow_16s')
     logger.info("="*60)
     logger.info("DECONTAMINATION WORKFLOW")
     logger.info("="*60)

@@ -1,43 +1,86 @@
-"""
-Batch-aware Machine Learning Module
-
-This module extends the standard ML analysis with batch covariate control approaches:
-1. Baseline: Standard ML without batch control
-2. Covariate Adjustment: Include batch variables as features alongside taxa
-3. Stratified Prediction: Two-stage residual analysis (predict batch, then biology)
-
-Includes comprehensive confounding detection and comparison reporting.
-"""
+# src/workflow_16s/downstream/machine_learning/batch_control/batch_control.py
 
 import json
 import re
+import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Union
 
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from scipy.stats import spearmanr
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.metrics import accuracy_score, r2_score
+from sklearn.metrics import r2_score, matthews_corrcoef
 from sklearn.model_selection import train_test_split
 from catboost import CatBoostClassifier, CatBoostRegressor 
+from datetime import datetime
 
 from workflow_16s.utils.logger import get_logger
 
-logger = get_logger("workflow_16s")
+# --- SECTION 1: UTILITIES ---
 
-def get_model_class(task_type: str, algorithm: str):
+def sanitize_catboost_params(
+    params: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Clean parameters to prevent 'n_estimators' vs 'iterations' conflicts."""
+    clean = params.copy()
+    aliases = {'n_estimators', 'num_boost_round', 'num_trees', 'iterations'}
+    keys_present = [k for k in clean.keys() if k in aliases]
+    if len(keys_present) > 1:
+        primary = 'iterations' if 'iterations' in keys_present else keys_present[0]
+        for k in keys_present:
+            if k != primary: clean.pop(k, None)
+    return clean
+
+def get_model_class(
+    task_type: str, 
+    algorithm: str
+) -> type:
     """Factory to return the correct model class based on task and algorithm."""
-    if algorithm == 'catboost':
-        if task_type == 'regression':
-            return CatBoostRegressor
-        return CatBoostClassifier
-    else:
-        # Default to Random Forest
-        if task_type == 'regression':
-            return RandomForestRegressor
-        return RandomForestClassifier
+    if algorithm.lower() == 'catboost':
+        return CatBoostRegressor if task_type.lower() == 'regression' else CatBoostClassifier
+    return RandomForestRegressor if task_type.lower() == 'regression' else RandomForestClassifier
+
+# --- SECTION 2: AUDIT & CONFIDENCE ENGINES ---
+
+def audit_biomarker_confidence(
+    X_taxa: pd.DataFrame, 
+    batch_covs: pd.DataFrame, 
+    top_taxa: List[str], 
+    rho_limit: float = 0.8
+) -> Tuple[pd.DataFrame, List[Dict]]:
+    """
+    Ranks biomarkers by how 'clean' they are from technical noise.
+    Score starts at 100; -20 points for every significant technical correlation.
+    """
+    report, exclusions = [], []
+    for taxon in top_taxa:
+        score, links = 100, []
+        is_leaky = False
+        for var in batch_covs.columns:
+            # Handle encoding for categorical metadata
+            b_vals = batch_covs[var].astype('category').cat.codes if batch_covs[var].dtype == 'object' else batch_covs[var]
+            rho, p = spearmanr(X_taxa[taxon], b_vals, nan_policy='omit')
+            
+            if isinstance(p, float) and p < 0.05:
+                score -= 20
+                links.append(f"{var} (ρ={rho:.2f})")
+                if isinstance(rho, float) and abs(rho) >= rho_limit:
+                    is_leaky = True
+                    exclusions.append({'taxon': taxon, 'var': var, 'rho': float(rho)})
+        
+        report.append({
+            'taxon': taxon, 
+            'score': max(0, score), 
+            'technical_links': "; ".join(links),
+            'status': 'REJECTED' if is_leaky else 'PASSED'
+        })
+    return pd.DataFrame(report), exclusions
+
+# --- SECTION 3: CORE EXECUTION ---
 
 def run_ml_with_batch_control(
     X_taxa: pd.DataFrame,
@@ -49,341 +92,181 @@ def run_ml_with_batch_control(
     level: str,
     confounding_info: Dict[str, Any],
     batch_config: Dict[str, Any],
-    model_algorithm: str = 'rf',   
-    model_params: Dict[str, Any] = None
+    model_algorithm: str = 'rf',    
+    model_params: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    """
-    Run ML models with three approaches: baseline, covariate-adjusted, stratified.
-    Now supports both Random Forest and CatBoost.
-    """
+    """Full execution of the three batch-control ML strategies."""
     results = {
-        'target': target_col,
-        'task_type': task_type,
-        'level': level,
-        'algorithm': model_algorithm, 
-        'confounding': confounding_info,
-        'models': {}
+        'target': target_col, 'task_type': task_type, 'level': level,
+        'algorithm': model_algorithm, 'confounding': confounding_info,
+        'models': {}, 'confidence_report': []
     }
     
-    # 1. Setup Model Class and Params
     ModelClass = get_model_class(task_type, model_algorithm)
+    metric_name, eval_func, stratify_opt = ("R²", r2_score, None) if task_type.lower() == 'regression' else ("MCC", matthews_corrcoef, y)
     
-    # Define metric names
-    if task_type == 'regression':
-        metric_name = "R²"
-        eval_func = r2_score
-        stratify_opt = None
+    final_params = (model_params or {}).copy()
+    if model_algorithm.lower() == 'catboost':
+        final_params.update({'verbose': False, 'allow_writing_files': False, 'thread_count': 4})
+        final_params = sanitize_catboost_params(final_params)
     else:
-        metric_name = "Accuracy"
-        eval_func = accuracy_score
-        stratify_opt = y
-    
-    # Prepare params based on algorithm
-    final_params = model_params.copy() if model_params else {}
-    
-    if model_algorithm == 'catboost':
-        # CatBoost specific defaults
-        final_params.setdefault('verbose', False)
-        final_params.setdefault('allow_writing_files', False)
-        final_params.setdefault('thread_count', 4)
-    else:
-        # RF specific defaults
         final_params.setdefault('n_estimators', 100)
-        final_params.setdefault('max_depth', 15)
         final_params.setdefault('n_jobs', -1)
-        final_params.setdefault('oob_score', True)  # Only for RF
 
-    # ===================================================================================
-    # APPROACH 1: BASELINE (No batch control)
-    # ===================================================================================
-    logger.info(f"\n{'='*80}")
-    logger.info(f"BASELINE MODEL ({model_algorithm.upper()}) - {target_col}")
-    logger.info(f"{'='*80}")
+    # A1: Baseline
+    X_train, X_test, y_train, y_test = train_test_split(X_taxa.fillna(0), y, test_size=0.3, random_state=42, stratify=stratify_opt)
+    model_b = ModelClass(**final_params).fit(X_train, y_train)
+    baseline_score = eval_func(y_test, model_b.predict(X_test))
     
-    X_baseline = X_taxa.fillna(0)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_baseline, y, test_size=0.3, random_state=42, stratify=stratify_opt
-    )
-    
-    model_baseline = ModelClass(**final_params)
-    model_baseline.fit(X_train, y_train)
-    y_pred_baseline = model_baseline.predict(X_test)
-    
-    baseline_score = eval_func(y_test, y_pred_baseline)
-    
-    # Handle OOB (RF only) vs just Test Score (CatBoost)
-    baseline_oob = getattr(model_baseline, 'oob_score_', None)
-    
-    logger.info(f"✓ Test {metric_name}: {baseline_score:.3f}")
-    if baseline_oob: logger.info(f"✓ OOB Score: {baseline_oob:.3f}")
-    
-    # Handle Feature Importances (CatBoost/RF differences)
-    try:
-        if hasattr(model_baseline, 'feature_importances_'):
-            imps = model_baseline.feature_importances_
-        elif hasattr(model_baseline, 'get_feature_importance'):
-            imps = model_baseline.get_feature_importance()
-        else:
-            imps = []
-    except Exception:
-        imps = []
+    if model_algorithm.lower() == 'catboost':
+        imp = model_b.get_feature_importance() # type: ignore
+    else:
+        imp = model_b.feature_importances_
+    # Ensure imp is a 1D numpy array
+    if isinstance(imp, pd.DataFrame):
+        imp = imp.values.squeeze()
+    elif isinstance(imp, pd.Series):
+        imp = imp.values
+    imp = np.asarray(imp).flatten()
+    top_taxa = X_taxa.columns[np.argsort(imp)[::-1][:30]].tolist()
+    results['models']['baseline'] = {'test_score': float(baseline_score)}
 
-    results['models']['baseline'] = {
-        'test_score': baseline_score,
-        'oob_score': baseline_oob,
-        'feature_importances': imps.tolist() if hasattr(imps, 'tolist') else list(imps)
-    }
-    
-    # ===================================================================================
-    # APPROACH 2: COVARIATE ADJUSTMENT
-    # ===================================================================================
+    # A2: Covariate Adjustment
     if batch_config.get('covariate_adjustment', {}).get('enabled', False):
-        logger.info(f"\n--- Covariate Adjusted ({model_algorithm.upper()}) ---")
-        X_adjusted = pd.concat([X_taxa, batch_covariates], axis=1).fillna(0)
+        X_adj = pd.concat([X_taxa, batch_covariates], axis=1).fillna(0)
+        X_tr, X_te, y_tr, y_te = train_test_split(X_adj, y, test_size=0.3, random_state=42, stratify=stratify_opt)
+        model_adj = ModelClass(**final_params).fit(X_tr, y_tr)
         
-        X_train_adj, X_test_adj, y_train_adj, y_test_adj = train_test_split(
-            X_adjusted, y, test_size=0.3, random_state=42, stratify=stratify_opt
-        )
-        
-        model_adjusted = ModelClass(**final_params)
-        model_adjusted.fit(X_train_adj, y_train_adj)
-        y_pred_adj = model_adjusted.predict(X_test_adj)
-        adjusted_score = eval_func(y_test_adj, y_pred_adj)
-        
-        # Calculate feature importance ratio (Batch vs Taxa)
-        try:
-            if hasattr(model_adjusted, 'feature_importances_'):
-                importances = model_adjusted.feature_importances_
-            elif hasattr(model_adjusted, 'get_feature_importance'):
-                importances = model_adjusted.get_feature_importance()
-            else:
-                importances = np.zeros(X_adjusted.shape[1])
-        except Exception:
-            importances = np.zeros(X_adjusted.shape[1])
-            
-        taxa_cols = set(X_taxa.columns)
-        
-        # Create DataFrame to sum importances
-        feat_df = pd.DataFrame({'feat': X_adjusted.columns, 'imp': importances})
-        taxa_imp = feat_df[feat_df['feat'].isin(taxa_cols)]['imp'].sum()
-        batch_imp = feat_df[~feat_df['feat'].isin(taxa_cols)]['imp'].sum()
-        total_imp = taxa_imp + batch_imp
-        
-        batch_frac = batch_imp / total_imp if total_imp > 0 else 0
-        
-        results['models']['covariate_adjusted'] = {
-            'test_score': adjusted_score,
-            'batch_importance_fraction': batch_frac
-        }
-        logger.info(f"✓ Adjusted {metric_name}: {adjusted_score:.3f}")
-        logger.info(f"  Batch Importance: {batch_frac:.1%}")
+        adj_imp = model_adj.feature_importances_ if hasattr(model_adj, 'feature_importances_') else model_adj.get_feature_importance() # type: ignore
+        feat_df = pd.DataFrame({'feat': X_adj.columns, 'imp': adj_imp})
+        batch_f = feat_df[feat_df['feat'].isin(batch_covariates.columns)]['imp'].sum() / feat_df['imp'].sum()
+        results['models']['covariate_adjusted'] = {'test_score': float(eval_func(y_te, model_adj.predict(X_te))), 'batch_importance_fraction': float(batch_f)}
 
-    # ===================================================================================
-    # APPROACH 3: STRATIFIED PREDICTION
-    # ===================================================================================
+    # A3: Stratified Residuals
     if batch_config.get('stratified_prediction', {}).get('enabled', False):
-        logger.info(f"\n--- Stratified/Residual ({model_algorithm.upper()}) ---")
-        
-        # 1. Train Batch Model (Target ~ Batch)
-        X_batch = batch_covariates.fillna(0)
-        X_b_train, X_b_test, y_b_train, y_b_test = train_test_split(
-             X_batch, y, test_size=0.3, random_state=42, stratify=stratify_opt
-        )
-        
-        # Use simpler params for batch model to avoid overfitting technical noise
-        batch_params = final_params.copy()
-        if model_algorithm == 'catboost':
-            batch_params['iterations'] = 50
-            batch_params['depth'] = 6
-        else:
-            batch_params['n_estimators'] = 50
-            batch_params['max_depth'] = 6
-            
-        batch_model = ModelClass(**batch_params)
-        batch_model.fit(X_b_train, y_b_train)
-        
-        y_pred_batch_all = batch_model.predict(X_batch)
-        batch_score = eval_func(y_b_test, batch_model.predict(X_b_test))
-        
-        # 2. Calculate Residuals
-        if task_type == 'regression':
-            residuals = y - y_pred_batch_all
-        else:
-            # Classification residuals: 1 if wrong, 0 if right (Simple error modeling)
-            residuals = (y != y_pred_batch_all).astype(float)
-            
-        # 3. Train Residual Model (Residuals ~ Taxa)
-        ResidClass = CatBoostRegressor if model_algorithm == 'catboost' else RandomForestRegressor
-        
-        X_r_train, X_r_test, r_train, r_test = train_test_split(
-            X_taxa.fillna(0), residuals, test_size=0.3, random_state=42
-        )
-        
-        # If residuals are constant (e.g. perfect prediction), skip training
-        if residuals.nunique() <= 1:
-             resid_score = 0.0
-             logger.info("  Batch model predicted perfectly (residuals are 0). Skipping residual model.")
-        else:
-            model_resid = ResidClass(**final_params)
-            model_resid.fit(X_r_train, r_train)
-            resid_score = r2_score(r_test, model_resid.predict(X_r_test))
-        
-        results['models']['stratified'] = {
-            'batch_model_score': batch_score,
-            'residual_model_score': resid_score
-        }
-        logger.info(f"✓ Batch Model Score: {batch_score:.3f}")
-        logger.info(f"✓ Residual Explained (R2): {resid_score:.3f}")
+        _, residuals = train_batch_residual_model(X_taxa, batch_covariates, y, X_test.index, task_type)
+        ResidModel = CatBoostRegressor if model_algorithm.lower() == 'catboost' else RandomForestRegressor
+        X_r_tr, X_r_te, r_tr, r_te = train_test_split(X_taxa.fillna(0), residuals, test_size=0.3, random_state=42)
+        m_resid = ResidModel(n_estimators=50, max_depth=5, verbose=False).fit(X_r_tr, r_tr)
+        results['models']['stratified'] = {'residual_model_score': float(r2_score(r_te, m_resid.predict(X_r_te)))}
 
-    # Save results to specific algo folder
+    # Final Audit
+    conf_df, exclusions = audit_biomarker_confidence(X_taxa, batch_covariates, top_taxa)
+    results['confidence_report'] = conf_df.to_dict(orient='records')
+    results['exclusions'] = exclusions
+
+    create_confounding_heatmap(X_taxa, batch_covariates, top_taxa, plot_dir, target_col, level)
+    
     algo_dir = plot_dir / model_algorithm
     algo_dir.mkdir(exist_ok=True, parents=True)
-    
-    safe_target = re.sub(r'[^A-Za-z0-9_]+', '', target_col)
-    with open(algo_dir / f"results_{safe_target}.json", 'w') as f:
+    import re
+    safe_target_name = re.sub(r'\W+', '', target_col)
+    filename = f"results_{safe_target_name}.json"
+
+    with open(algo_dir / filename, 'w') as f:
         json.dump(results, f, indent=2, default=str)
 
     return results
 
-# ===================================================================================
-#  VISUALIZATION FUNCTIONS (RESTORED)
-# ===================================================================================
+# --- SECTION 4: VISUALIZATION & REPORTING ---
 
-def create_comparison_plots(all_results: Dict[str, Dict], plot_dir: Path, level: str):
-    """Create comparison visualizations across all targets and approaches."""
-    if not all_results:
-        return
-    
-    # We might have results from RF, CatBoost, or both. 
-    # Current structure of all_results might be mixed.
-    # This function expects standard structure, adapt if necessary.
-    
-    logger.info(f"\n{'='*80}")
-    logger.info("GENERATING BATCH CONTROL COMPARISON PLOTS")
-    logger.info(f"{'='*80}")
-    
-    # Collect data for comparison
-    targets = []
-    baseline_scores = []
-    adjusted_scores = []
-    batch_fractions = []
-    
-    for target, result in all_results.items():
-        if 'baseline' not in result.get('models', {}):
-            continue
-        
-        targets.append(target)
-        baseline_scores.append(result['models']['baseline']['test_score'])
-        
-        if 'covariate_adjusted' in result['models']:
-            adjusted_scores.append(result['models']['covariate_adjusted']['test_score'])
-            batch_fractions.append(result['models']['covariate_adjusted']['batch_importance_fraction'])
-        else:
-            adjusted_scores.append(None)
-            batch_fractions.append(None)
-    
-    # Create subplot figure
-    fig = make_subplots(
-        rows=2, cols=1,
-        subplot_titles=("Model Performance Comparison", "Batch Variance Contribution"),
-        vertical_spacing=0.15,
-        specs=[[{"type": "bar"}], [{"type": "bar"}]]
-    )
-    
-    # Plot 1: Performance comparison
-    fig.add_trace(
-        go.Bar(name='Baseline', x=targets, y=baseline_scores, marker_color='blue'),
-        row=1, col=1
-    )
-    
-    if any(s is not None for s in adjusted_scores):
-        fig.add_trace(
-            go.Bar(name='Covariate Adjusted', x=targets, y=[s for s in adjusted_scores if s is not None],
-                   marker_color='orange'),
-            row=1, col=1
-        )
-    
-    # Plot 2: Batch contribution
-    if any(f is not None for f in batch_fractions):
-        fig.add_trace(
-            go.Bar(name='Batch Importance Fraction', x=targets, 
-                   y=[f*100 if f is not None else 0 for f in batch_fractions],
-                   marker_color='red', showlegend=False),
-            row=2, col=1
-        )
-    
-    fig.update_xaxes(title_text="Target Variable", row=2, col=1)
-    fig.update_yaxes(title_text="Score", row=1, col=1)
-    fig.update_yaxes(title_text="Batch Variance %", row=2, col=1)
-    
-    fig.update_layout(
-        height=800,
-        title_text=f"Batch Control Comparison Across Targets ({level})",
-        showlegend=True
-    )
-    
-    plot_path = plot_dir / f"batch_control_comparison_{level}.html"
-    fig.write_html(str(plot_path))
-    logger.info(f"✓ Comparison plot saved: {plot_path.name}")
-    
-    # Create summary markdown report
-    create_summary_report(all_results, plot_dir, level)
-
-
-def create_summary_report(all_results: Dict[str, Dict], plot_dir: Path, level: str):
-    """Generate markdown summary report with interpretation guidance."""
+def create_summary_report(
+    all_results: Dict[str, Dict], 
+    plot_dir: Path, 
+    level: str
+):
+    """
+    Generates a Markdown summary report synthesizing results across all ML targets.
+    This provides the final 'biological vs technical' verdict.
+    """
+    logger = get_logger("workflow_16s")
     report_path = plot_dir / f"batch_control_summary_{level}.md"
-    
     with open(report_path, 'w') as f:
-        f.write(f"# Batch Covariate Control - ML Analysis Summary\n\n")
-        f.write(f"**Taxonomic Level:** {level}  \n")
-        f.write(f"**Total Targets:** {len(all_results)}  \n\n")
+        f.write(f"# Batch Covariate Control - ML Discovery Summary\n\n")
+        f.write(f"**Taxonomic Level:** {level}  \n**Audit Date:** {datetime.now().strftime('%Y-%m-%d')}  \n\n")
         
-        f.write("## Approaches Explained\n\n")
-        f.write("### 1. Baseline (No Batch Control)\n")
-        f.write("- **Method:** Train Model on taxa features only\n")
-        f.write("- **Benefits:** Simple, interpretable, shows raw predictive power\n")
-        f.write("- **Caveats:** May confound biological and technical variation\n")
+        f.write("## 1. Performance Summary\n")
+        f.write("| Target | Baseline Score | Adj. Score | Batch Var % | Status |\n")
+        f.write("| :--- | :--- | :--- | :--- | :--- |\n")
         
-        f.write("### 2. Covariate Adjustment\n")
-        f.write("- **Method:** Train Model on [Taxa + Batch Variables] together\n")
-        f.write("- **Benefits:** Taxa importances show biological signal AFTER controlling for batch\n")
-        
-        f.write("### 3. Stratified/Residual Prediction\n")
-        f.write("- **Method:** Stage 1: Predict target from batch → Stage 2: Predict residuals from taxa\n")
-        f.write("- **Benefits:** Explicitly quantifies batch vs biological contributions\n")
-        
-        f.write("## Results Summary\n\n")
-        f.write("| Target | Baseline Score | Adjusted Score | Batch Variance % | Confounding |\n")
-        f.write("|--------|---------------|----------------|------------------|-------------|\n")
-        
-        for target, result in sorted(all_results.items()):
-            if 'baseline' not in result.get('models', {}):
-                continue
+        for target, res in all_results.items():
+            base = res['models']['baseline']['test_score']
+            adj = res['models'].get('covariate_adjusted', {}).get('test_score', 'N/A')
+            b_var = res['models'].get('covariate_adjusted', {}).get('batch_importance_fraction', 0)
             
-            baseline = result['models']['baseline']['test_score']
-            adjusted = result['models'].get('covariate_adjusted', {}).get('test_score', 'N/A')
-            batch_frac = result['models'].get('covariate_adjusted', {}).get('batch_importance_fraction', 0)
+            # Simple Status Logic
+            status = "🟢 Robust" if b_var < 0.3 else "🟡 Contaminated" if b_var < 0.6 else "🔴 Technical Artifact"
             
-            n_high = len(result.get('confounding', {}).get('high_confounding', []))
-            n_mod = len(result.get('confounding', {}).get('moderate_confounding', []))
-            
-            if n_high > 0:
-                confound_str = f"🔴 High ({n_high})"
-            elif n_mod > 0:
-                confound_str = f"🟡 Moderate ({n_mod})"
-            else:
-                confound_str = "🟢 Low"
-            
-            f.write(f"| {target} | {baseline:.3f} | {adjusted if isinstance(adjusted, str) else f'{adjusted:.3f}'} | ")
-            f.write(f"{batch_frac*100:.1f}% | {confound_str} |\n")
+            adj_str = f"{adj:.3f}" if isinstance(adj, float) else adj
+            f.write(f"| {target} | {base:.3f} | {adj_str} | {b_var:.1%} | {status} |\n")
+
+        f.write("\n## 2. Biomarker Confidence Audit (Top Taxa)\n")
+        f.write("Identifies taxa that are potentially just proxies for technical variables.\n\n")
         
-        f.write("\n## Interpretation Guidelines\n\n")
-        f.write("**High Confounding (🔴):**\n")
-        f.write("- Batch variables are strongly associated with the target\n")
-        f.write("- Results may be unreliable\n")
-        
-        f.write("**Batch Variance >50%:**\n")
-        f.write("- Technical factors explain most of the predictive power\n")
-        
-    logger.info(f"✓ Summary report saved: {report_path.name}")
+        for target, res in all_results.items():
+            f.write(f"### Target: {target}\n")
+            f.write("| Taxon | Confidence Score | Status | Technical Links |\n")
+            f.write("| :--- | :--- | :--- | :--- |\n")
+            for entry in res['confidence_report'][:10]: # Top 10 for brevity
+                f.write(f"| {entry['taxon'].split('__')[-1]} | {entry['score']} | {entry['status']} | {entry['technical_links']} |\n")
+            f.write("\n")
+    logger.info(f"[✔] Summary report created at {report_path}")
+
+def create_confounding_heatmap(
+    X_taxa, 
+    batch_covariates, 
+    top_taxa, 
+    plot_dir, 
+    target_name, 
+    level
+):
+    """Significance-masked heatmap (p < 0.05)."""
+    logger = get_logger("workflow_16s")
+    taxa_subset = X_taxa[top_taxa]
+    corr_matrix = pd.DataFrame(index=top_taxa, columns=batch_covariates.columns)
+    p_matrix = pd.DataFrame(index=top_taxa, columns=batch_covariates.columns)
+
+    for taxon in top_taxa:
+        for b_var in batch_covariates.columns:
+            b_vals = batch_covariates[b_var].astype('category').cat.codes if batch_covariates[b_var].dtype == 'object' else batch_covariates[b_var]
+            rho, p = spearmanr(taxa_subset[taxon], b_vals, nan_policy='omit')
+            corr_matrix.loc[taxon, b_var] = rho # type: ignore
+            p_matrix.loc[taxon, b_var] = p # type: ignore
+
+    masked_corr = corr_matrix.astype(float).where(p_matrix.astype(float) < 0.05, np.nan)
+    fig = px.imshow(
+        masked_corr,
+        labels=dict(x="Batch Variable", y="Microbial Taxon", color="Significant ρ"),
+        x=batch_covariates.columns, y=[t.split('__')[-1] for t in top_taxa],
+        color_continuous_scale='RdBu_r', range_color=[-1, 1],
+        title=f"Confounding Diagnostic (p < 0.05): {target_name}"
+    )
+    safe_target = re.sub(r'\W+', '', target_name)
+    fig.write_html(str(plot_dir / f"confounding_heatmap_{safe_target}.html"))
+    logger.info(f"[✔] Confounding heatmap saved for target '{target_name}' at {plot_dir / f'confounding_heatmap_{safe_target}.html'}")
+
+def train_batch_residual_model(
+    X_taxa, 
+    batch_covs, 
+    y, 
+    test_idx, 
+    task
+):
+    train_idx = X_taxa.index.difference(test_idx)
+    M = RandomForestRegressor if task == 'regression' else RandomForestClassifier
+    model = M(n_estimators=50, max_depth=8).fit(batch_covs.loc[train_idx].fillna(0), y.loc[train_idx])
+    residuals = y - model.predict(batch_covs.fillna(0)) if task == 'regression' else (y != model.predict(batch_covs.fillna(0))).astype(float)
+    return model, residuals
+
+def create_comparison_plots(
+    all_results: Dict[str, Dict], 
+    plot_dir: Path, 
+    level: str
+):
+    logger = get_logger("workflow_16s")
+    targets = list(all_results.keys())
+    baseline_s = [all_results[t]['models']['baseline']['test_score'] for t in targets]
+    fig = make_subplots(rows=2, cols=1, subplot_titles=("Model Accuracy", "Batch Contribution"))
+    fig.add_trace(go.Bar(name='Baseline', x=targets, y=baseline_s), row=1, col=1)
+    fig.write_html(str(plot_dir / f"batch_control_comparison_{level}.html"))
+    logger.info(f"[✔] Comparison plots saved to {plot_dir / f'batch_control_comparison_{level}.html'}")

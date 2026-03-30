@@ -8,10 +8,13 @@ import json
 import logging
 import math
 import sys
+import sqlite3
+import pickle
+import time
 import tempfile
 import yaml
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -21,9 +24,9 @@ from pydantic import ValidationError
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
 # Local Imports
-from workflow_16s.config_schema import AppConfig
+from workflow_16s.config import AppConfig
 from workflow_16s.utils.dir_utils import Project
-from workflow_16s.utils.logger import setup_logging
+from workflow_16s.utils.logger import with_logger
 from workflow_16s.utils.metadata_utils import export_tsv, process_metadata, standardize_lat_lon_columns
 from workflow_16s.utils.progress import get_progress_bar
 # Add env_agents to path
@@ -33,9 +36,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[5]))
 from env_agents.adapters import CANONICAL_SERVICES # type: ignore
 from env_agents.core.models import RequestSpec, Geometry # type: ignore
 
-# ==================================================================================== #
-
-logger = logging.getLogger("workflow_16s")
 
 # ==================================================================================== #
 
@@ -75,49 +75,80 @@ class CustomJSONEncoder(json.JSONEncoder):
         if hasattr(o, 'getInfo'): return o.getInfo()
         return super().default(o)
 
-class CacheManager:
-    """Handles file-based caching for network requests with statistics tracking."""
-    def __init__(self, cache_dir: Path):
+#@with_logger
+class SQLiteCacheManager:
+    """Handles SQLite-backed caching for Arkin Environmental Agents."""
+    
+    ARKIN_TTL_SECONDS = 7 * 24 * 3600  # 7 days - Earth Engine data expires
+    
+    def __init__(self, cache_dir: Path, db_name: str = "arkin_env_agents.db"):
+        self.db_path = cache_dir / db_name
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Cache enabled at directory: {self.cache_dir.resolve()}")
-        
-        # Statistics tracking
-        self.stats = {'hits': 0, 'misses': 0, 'writes': 0, 'errors': 0}
-        self.failed_services = {}  # Track services that consistently fail
+        self.ttl = self.ARKIN_TTL_SECONDS
+        self._init_db()
+        self.stats = {'hits': 0, 'misses': 0, 'writes': 0, 'errors': 0, 'expired': 0}
+        self.failed_services = {}
+        from workflow_16s.utils.logger import get_logger
+        self.logger = get_logger("workflow_16s")
+
+    def _init_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS cache (
+                    key TEXT PRIMARY KEY,
+                    data BLOB,
+                    timestamp REAL
+                )
+            """)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
 
     def get_cache_key(self, params: Dict[str, Any]) -> str:
         serialized = json.dumps(params, sort_keys=True).encode('utf-8')
         return hashlib.sha256(serialized).hexdigest()
 
     def get(self, key: str) -> Optional[List[Dict]]:
-        cache_file = self.cache_dir / f"{key}.json"
-        if cache_file.exists():
-            try:
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    if not content:
-                        raise json.JSONDecodeError("File is empty", "", 0)
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("SELECT data, timestamp FROM cache WHERE key = ?", (key,))
+                row = cursor.fetchone()
+                if row:
+                    data, timestamp = row
+                    # NEW: Check TTL expiration (7 days)
+                    if time.time() - timestamp > self.ttl:
+                        self.logger.debug(f"✗ Arkin cache expired: {key[:40]}...")
+                        conn.execute("DELETE FROM cache WHERE key = ?", (key,))
+                        conn.commit()
+                        self.stats['expired'] += 1
+                        self.stats['misses'] += 1
+                        return None
+                    
                     self.stats['hits'] += 1
-                    return json.loads(content)
-            except (json.JSONDecodeError, IOError) as e:
-                logger.warning(f"Corrupted cache file {cache_file}: {e}. Deleting and re-fetching.")
-                cache_file.unlink(missing_ok=True)
-                self.stats['errors'] += 1
+                    self.logger.debug(f"✓ Arkin cache hit: {key[:40]}...")
+                    return pickle.loads(data)
+        except Exception as e:
+            self.logger.warning(f"Cache read error for {key}: {e}")
+            self.stats['errors'] += 1
         
         self.stats['misses'] += 1
         return None
 
     def set(self, key: str, data: List[Dict]):
-        if not data:
-            return
-        cache_file = self.cache_dir / f"{key}.json"
+        if not data: return
         try:
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, cls=CustomJSONEncoder)
+            # We use pickle here because it handles the complex Earth Engine 
+            # and Pandas types more robustly than raw JSON in a DB blob
+            blob = pickle.dumps(data)
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO cache (key, data, timestamp) VALUES (?, ?, ?)",
+                    (key, blob, time.time())
+                )
+            self.logger.debug(f"💾 Cached Arkin data: {key[:40]}...")
             self.stats['writes'] += 1
-        except IOError as e:
-            logger.warning(f"Failed to write cache file {cache_file}: {e}")
+        except Exception as e:
+            self.logger.warning(f"Cache write error for {key}: {e}")
             self.stats['errors'] += 1
     
     def track_failed_service(self, service_name: str):
@@ -135,11 +166,14 @@ class CacheManager:
         return {
             **self.stats,
             'total_requests': total,
-            'hit_rate_pct': round(hit_rate, 1)
+            'hit_rate_pct': round(hit_rate, 1),
+            'ttl_seconds': self.ttl,
+            'ttl_days': self.ttl / (24 * 3600)
         }
 
 # ============================= CORE FUNCTIONS =================================== #
 
+@with_logger
 def standardize_column_name(df: pd.DataFrame, target_name: str, alternatives: list) -> pd.DataFrame:
     """
     Finds a column from a list of alternatives (case-insensitive) and renames it to a target name.
@@ -181,7 +215,7 @@ def bbox_around_point(lat: float, lon: float, radius_km: float) -> Geometry:
     buffer_lon = radius_km * lon_deg_per_km
     return Geometry(type='bbox', coordinates=[lon - buffer_lon, lat - buffer_lat, lon + buffer_lon, lat + buffer_lon])
 
-
+@with_logger
 def _validate_services() -> Set[str]:
     """Checks prerequisites for services and returns a set of available services."""
     available_services = set(SERVICE_CONFIG.keys())
@@ -202,8 +236,9 @@ def _validate_services() -> Set[str]:
 
     return available_services
 
+@with_logger
 def fetch_service_data(
-    service_name: str, spec: RequestSpec, cache_manager: CacheManager,
+    service_name: str, spec: RequestSpec, cache_manager: SQLiteCacheManager,
     asset_info: Optional[Tuple[str, str]] = None,
     max_retries: int = 3
 ) -> List[Dict]:
@@ -214,6 +249,7 @@ def fetch_service_data(
         logger.debug(f"Skipping {service_name} due to consistent failures")
         return []
     
+    # 1. Generate Key
     cache_params = {
         "service": service_name,
         "geometry": vars(spec.geometry),
@@ -222,6 +258,7 @@ def fetch_service_data(
     }
     cache_key = cache_manager.get_cache_key(cache_params)
 
+    # 2. SQLite Look-up (Instant, even with 100k entries)
     if (cached_result := cache_manager.get(cache_key)) is not None:
         return cached_result
 
@@ -276,14 +313,23 @@ def fetch_service_data(
     
     return []
 
+@with_logger
 def get_environmental_data_for_group(
     lat: float, lon: float, collection_date: str,
-    cache_manager: CacheManager, available_services: Set[str]
+    cache_manager: SQLiteCacheManager, available_services: Set[str]
 ) -> pd.DataFrame:
     """Orchestrates data fetching from all available services for a single location group."""
     logger.info(f"Fetching data for location ({lat:.4f}, {lon:.4f}) on {collection_date}...")
 
-    time_range = (collection_date, collection_date)
+    # FIX: Pad the end date by 1 day to prevent Earth Engine's "Empty date range" error
+    try:
+        dt_obj = datetime.strptime(collection_date, "%Y-%m-%d")
+        end_date = (dt_obj + timedelta(days=15)).strftime("%Y-%m-%d")
+        time_range = (collection_date, end_date)
+    except ValueError:
+        # Graceful fallback if date string formatting is unexpected
+        time_range = (collection_date, collection_date)
+        
     geometry = bbox_around_point(lat, lon, radius_km=1.0)
     all_results = []
 
@@ -308,9 +354,10 @@ def get_environmental_data_for_group(
 
     return pd.DataFrame(all_results)
 
+@with_logger
 def process_location_group(
     group_key: Tuple, group_df: pd.DataFrame,
-    project_dir: Project, cache_manager: CacheManager, available_services: Set[str]
+    project_dir: Project, cache_manager: SQLiteCacheManager, available_services: Set[str]
 ) -> Optional[pd.DataFrame]:
     """
     Processes a group of samples sharing the same location and date, saves the
@@ -354,10 +401,11 @@ def process_location_group(
 
 # =============================== MAIN EXECUTION ================================= #
 
-def main(metadata_path: Union[str, Path], project_dir: Project) -> Optional[pd.DataFrame]:
+@with_logger
+def main(metadata_path: Union[str, Path], project_dir: Project, progress_obj: Any = None) -> Optional[pd.DataFrame]:
     """
     Main function to group samples, fetch environmental data concurrently,
-    and return a consolidated DataFrame.
+    and return a consolidated DataFrame. Dashboard-safe.
     """
     metadata_path = Path(metadata_path)
     if not metadata_path.exists():
@@ -384,18 +432,26 @@ def main(metadata_path: Union[str, Path], project_dir: Project) -> Optional[pd.D
     logger.info(f"Found {len(valid_rows)} valid samples, grouped into {len(grouped)} unique location-date pairs for processing.")
 
     # Initialize cache and check for service availability ONCE
-    cache_manager = CacheManager(project_dir.cache / "env_agents")
+    cache_manager = SQLiteCacheManager(project_dir.cache / "env_agents")
     available_services = _validate_services()
 
     if not available_services:
         logger.error("No environmental services are available. Aborting.")
         return None
 
-    all_group_dfs = []
-    # Use ThreadPoolExecutor to process groups concurrently
-    with get_progress_bar() as progress:
-        task = progress.add_task("[cyan]Processing location groups", total=len(grouped))
+    # Unified Progress Handling
+    p = progress_obj
+    standalone = False
+    if p is None:
+        p = get_progress_bar()
+        p.start()
+        standalone = True
 
+    all_group_dfs = []
+    task = p.add_task("[cyan]Arkin Agents: Fetching contextual data", total=len(grouped))
+
+    try:
+        # Use ThreadPoolExecutor to process groups concurrently
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SAMPLES) as executor:
             futures = [
                 executor.submit(process_location_group, key, group, project_dir, cache_manager, available_services)
@@ -410,7 +466,12 @@ def main(metadata_path: Union[str, Path], project_dir: Project) -> Optional[pd.D
                 except Exception as e:
                     logger.error(f"A location group failed during processing: {e}", exc_info=True)
                 finally:
-                    progress.update(task, advance=1)
+                    p.update(task, advance=1)
+    finally:
+        if standalone:
+            p.stop()
+        else:
+            p.remove_task(task)
     
     if not all_group_dfs:
         logger.warning("Environmental data fetching complete, but no data was collected.")
@@ -427,3 +488,99 @@ def main(metadata_path: Union[str, Path], project_dir: Project) -> Optional[pd.D
     logger.info(f"Columns: {json.dumps(dtype_info, indent=2)}")
 
     return final_df
+
+# =============================== CLASS WRAPPER ================================== #
+@with_logger
+class ArkinEnvAgents:
+    """
+    Orchestrator for the Arkin Lab Environmental Agents.
+    Groups samples by location/date and fetches satellite/soil/weather context.
+    """
+    def __init__(self, config: AppConfig):
+        self.config = config
+        self.logger = logger
+        self.available_services = _validate_services()
+        
+        # Determine Earth Engine project from credentials config
+        self.ee_project = getattr(config.credentials, 'google_earth_engine_project', None)
+        if "EARTH_ENGINE" in self.available_services and self.ee_project:
+            try:
+                import ee
+                ee.Initialize(project=self.ee_project, opt_url='https://earthengine-highvolume.googleapis.com')
+                self.logger.info(f"GEE initialized successfully with project: {self.ee_project}")
+            except Exception as e:
+                self.logger.error(f"GEE initialization failed even with project ID: {e}")
+
+    async def process_dataset(self, dataset_id: str, ena_metadata: pd.DataFrame, progress_obj: Any = None) -> Optional[pd.DataFrame]:
+        """
+        Entry point for the pipeline orchestrator.
+        Takes a BioProject's metadata and enriches it with environmental data.
+        """
+        if ena_metadata.empty or not self.available_services:
+            return None
+
+        self.logger.info(f"🌿 [Arkin Agents] Starting environmental enrichment for {dataset_id}...")
+        
+        # Use a project object for pathing
+        project_dir = Project(self.config)
+        cache_manager = SQLiteCacheManager(project_dir.cache / "env_agents")
+
+        # 1. Standardize and Clean Metadata
+        df = ena_metadata.copy()
+        df = standardize_lat_lon_columns(df)
+        
+        # Ensure numeric coordinates
+        df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
+        df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
+        
+        # Handle date formatting (fallback to standard if possible)
+        if 'collection_date' in df.columns:
+            df['collection_date'] = pd.to_datetime(df['collection_date'], errors='coerce').dt.strftime('%Y-%m-%d')
+        else:
+            self.logger.warning(f"No 'collection_date' found for {dataset_id}. Environmental context will be limited.")
+            return None
+
+        # Drop rows that are missing the "Holy Trinity" of environmental context
+        valid_rows = df.dropna(subset=["run_accession", "collection_date", "lat", "lon"])
+        if valid_rows.empty:
+            self.logger.warning(f"No samples in {dataset_id} have enough spatio-temporal data for environmental context.")
+            return None
+
+        # 2. Group by unique location and date to minimize API calls
+        grouped = valid_rows.groupby(['lat', 'lon', 'collection_date'])
+        
+        # 3. Concurrent Execution
+        all_group_dfs = []
+        
+        # Plumbing for progress reporting
+        p = progress_obj or get_progress_bar()
+        task = p.add_task(f"[cyan]Arkin Agents: {dataset_id}", total=len(grouped))
+
+        # We run the blocking ThreadPool in an executor to keep the main loop async
+        loop = asyncio.get_event_loop()
+        
+        def _execute_sync_batch():
+            results = []
+            with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SAMPLES) as executor:
+                futures = [
+                    executor.submit(process_location_group, key, group, project_dir, cache_manager, self.available_services)
+                    for key, group in grouped
+                ]
+                for future in as_completed(futures):
+                    res = future.result()
+                    if res is not None: results.append(res)
+                    if progress_obj: p.update(task, advance=1)
+            return results
+
+        try:
+            all_group_dfs = await loop.run_in_executor(None, _execute_sync_batch)
+        finally:
+            if not progress_obj: p.stop()
+            else: p.remove_task(task)
+
+        if not all_group_dfs:
+            return None
+
+        # 4. Consolidate and Return
+        final_df = pd.concat(all_group_dfs, ignore_index=True)
+        return final_df

@@ -15,10 +15,30 @@ import plotly.graph_objects as go
 import plotly.io as pio
 import plotly.express as px
 import numpy as np
-from sklearn.metrics.pairwise import haversine_distances 
+#from sklearn.metrics.pairwise import haversine_distances 
 from scipy.sparse import issparse  
 from workflow_16s.downstream.utils import AnalysisUtils
 logger = logging.getLogger("workflow_16s")
+import numpy as np
+
+def haversine_distances(coords1, coords2):
+    """
+    Manual replacement for sklearn.metrics.pairwise.haversine_distances
+    to avoid numpy binary incompatibility errors.
+    Expects input in radians.
+    """
+    # Extract lat/lon
+    lat1, lon1 = coords1[:, 0], coords1[:, 1]
+    lat2, lon2 = coords2[:, 0], coords2[:, 1]
+    
+    # Haversine formula
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat / 2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2)**2
+    c = 2 * np.arcsin(np.sqrt(a))
+    
+    # Return as distance matrix
+    return c.reshape(-1, 1)
 
 largecolorset = list(cc.glasbey + cc.glasbey_light + cc.glasbey_warm + cc.glasbey_cool + cc.glasbey_dark)
 
@@ -125,7 +145,18 @@ class PlottingUtils:
         </div>
         """
         return metadata_html
-
+    def add_line_breaks(self, txt: str, max_length: int = 40) -> str:
+        """
+        Adds line breaks to a string if it exceeds a certain length, trying to break at spaces.
+        """
+        if len(txt) <= max_length:
+            return txt
+        else:
+            # Try to break at the last space before max_length
+            breakpoint = txt.rfind(' ', 0, max_length)
+            if breakpoint == -1: breakpoint = max_length  # If no space found, break at max_length
+            return txt[:breakpoint] + '<br>' + self.add_line_breaks(txt[breakpoint:].strip(), max_length)
+        
     def save_plotly_fig(self, fig: go.Figure, filepath: Path, batch: bool = False, scale: int = None, save_png: bool = False, **kwargs):
         """
         Safely saves a Plotly figure to HTML, PNG, and JSON files.

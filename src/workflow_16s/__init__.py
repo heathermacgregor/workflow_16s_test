@@ -16,6 +16,9 @@ Modules:
 __version__ = "2.0.0"
 __author__ = "Heather MacGregor"
 
+from .config import config_schema
+from .utils.ui.logger import get_logger, with_logger, setup_logging
+
 # Lazy imports - only import when used to avoid dependency issues
 def get_config(*args, **kwargs):
     """Lazy import wrapper for config.get_config"""
@@ -30,6 +33,9 @@ def setup_logging(*args, **kwargs):
 __all__ = [
     "__version__",
     "__author__",
+    "config_schema",
     "get_config",
+    "get_logger",
+    "with_logger",
     "setup_logging",
 ]

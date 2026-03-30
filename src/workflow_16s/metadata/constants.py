@@ -1,17 +1,11 @@
-# ===================================== IMPORTS ====================================== #
+# workflow_16s/metadata/constants.py
 
-# Standard Imports
 import re
 from typing import Callable, Dict, Tuple
 import pandas as pd
 
-# ============================== REGEX PATTERNS ================================== #
-
-# Pre-compiled regex for efficiency
 NUM_PATTERN = re.compile(r'[-+]?\d*\.\d+|[-+]?\d+')
 PH_PATTERN = re.compile(r'^ph[^a-zA-Z]|^ph$')
-
-# =========================== COORDINATE DEFINITIONS ============================= #
 
 DEFAULT_COORDINATE_SOURCES = {
     'lat': [
@@ -31,10 +25,9 @@ DEFAULT_COORDINATE_SOURCES = {
     ]
 }
 
-# ============================ COLUMN/UNIT DEFINITIONS =========================== #
-
 DEFAULT_COLUMN_MAPPINGS = {
-    'env_biome': 'environment_biome', 'env_feature': 'environment_feature',
+    'env_biome': 'environment_biome', 
+    'env_feature': 'environment_feature',
     'env_material': 'environment_material'
 }
 
@@ -53,10 +46,10 @@ DEFAULT_CONVERSIONS: Dict[str, Tuple[str, Callable[[pd.Series], pd.Series]]] = {
 }
 
 DEFAULT_MEASUREMENT_STANDARDS = {
-    'temp': 'celsius', 'depth': 'meters', 'altitude': 'meters'
+    'temp': 'celsius', 
+    'depth': 'meters', 
+    'altitude': 'meters'
 }
-
-# ============================= ONTOLOGY DEFINITIONS ============================= #
 
 ONTOLOGY_MAP = {
     'empo_1': {
@@ -99,14 +92,6 @@ ONTOLOGY_MAP = {
     }
 }
 
-# workflow_16s/upstream/metadata/constants.py
-
-"""
-Stores static constant definitions for metadata partitioning.
-"""
-
-# Keywords used to filter out datasets that are likely host-associated
-# and not relevant to the environmental focus.
 exclusion_keywords = [
     # --- Host Organisms (Human & Animal) ---
     "human", "patient", "clinical",      # Human-specific

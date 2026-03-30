@@ -26,13 +26,10 @@ from skbio.tree import TreeNode
 from sklearn.preprocessing import StandardScaler
 
 from workflow_16s.downstream.utils import AnalysisUtils
-from workflow_16s.downstream.visualization import PlottingUtils
+from workflow_16s.visualization.utils import PlottingUtils
 from workflow_16s.downstream.diversity.beta.distance_matrix import process_distance_matrix
 from workflow_16s.downstream.diversity.beta.plotting import plot_ordination
 from workflow_16s.utils.logger import get_logger
-
-logger = get_logger("workflow_16s")
-plot_utils = PlottingUtils(logger)
 
 
 def run_beta_diversity_and_stats(
@@ -70,6 +67,8 @@ def run_beta_diversity_and_stats(
     - UniFrac metrics only computed for ASV level with valid tree
     - Samples with zero total counts are removed before analysis
     """
+    logger = get_logger("workflow_16s")
+    plot_utils = PlottingUtils(logger)
     # Always use n_cpus if provided, otherwise default to 1 (not os.cpu_count())
     _CPU_COUNT = n_cpus if n_cpus is not None else 1
     logger.info(f"--- Starting Beta Diversity (Using {_CPU_COUNT} CPUs) ---")
@@ -211,6 +210,8 @@ def run_constrained_ordination(
     - Requires at least 3 samples with complete metadata
     - Missing numeric values are imputed with column means
     """
+    logger = get_logger("workflow_16s")
+    plot_utils = PlottingUtils(logger)
     logger.info("--- Starting Redundancy Analysis (RDA) ---")
 
     # Filter to available environmental variables
@@ -220,20 +221,35 @@ def run_constrained_ordination(
         return
 
     env_df = adata.obs[env_vars].copy()
+    
+    # Remove columns that are entirely NaN (e.g., failed weather lookups)
+    initial_cols = len(env_df.columns)
+    env_df = env_df.dropna(axis=1, how='all')
+    removed_cols = initial_cols - len(env_df.columns)
+    if removed_cols > 0:
+        logger.warning(f"Removed {removed_cols} all-NaN columns from environment matrix: {set(env_vars) - set(env_df.columns)}")
+    
+    if env_df.empty:
+        logger.warning("All environmental variables are NaN. Skipping RDA.")
+        return
 
-    # One-hot encode categorical variables
-    cat_vars = [v for v in env_vars
-                if pd.api.types.is_categorical_dtype(env_df[v]) or
+    # One-hot encode categorical variables (use remaining columns, not original env_vars)
+    cat_vars = [v for v in env_df.columns
+                if pd.api.types.is_categorical_dtype(env_df[v]) or 
                    pd.api.types.is_object_dtype(env_df[v])]
 
     if cat_vars:
-        env_df = pd.get_dummies(
-            env_df,
-            columns=cat_vars,
-            drop_first=True,
-            dummy_na=True,
-            dtype=float
-        )
+        # Drop columns with > 100 unique categories to prevent TB-sized memory allocations
+        valid_cols = [c for c in env_df.select_dtypes(include=['object', 'category']).columns if env_df[c].nunique() < 100]
+        env_df = pd.get_dummies(env_df[valid_cols], dummy_na=True)
+        # Dummy comment to replace the original function call safely
+        #_ = (
+        #    env_df,
+        #    columns=cat_vars,
+        #    drop_first=True,
+        #    dummy_na=True,
+        #    dtype=float
+        #)
 
     # Standardize numeric variables
     # Filter to only columns that actually exist in the dataframe
@@ -258,7 +274,12 @@ def run_constrained_ordination(
         env_df[num_vars] = StandardScaler().fit_transform(filled_data)
 
     # Remove samples with missing data
+    env_df_before = len(env_df)
     env_df = env_df.dropna()
+    env_df_after = len(env_df)
+    
+    if env_df_before > env_df_after:
+        logger.warning(f"Metadata completeness: Removed {env_df_before - env_df_after} samples with NaN→ {env_df_after} remaining")
 
     if env_df.shape[0] < 3:
         logger.warning("Insufficient samples with complete metadata. Skipping RDA.")
@@ -285,7 +306,7 @@ def run_constrained_ordination(
         # Find common samples
         common = clr_df.index.intersection(env_df.index)
         if len(common) < 3:
-            logger.warning(f"Insufficient overlap for RDA at {level}")
+            logger.warning(f"Insufficient overlap for RDA at {level}: clr has {len(clr_df)} samples, env_df has {len(env_df)} samples, common={len(common)}. Skipping.")
             continue
 
         # Run RDA
@@ -306,20 +327,96 @@ def run_constrained_ordination(
             columns=['RDA1', 'RDA2']
         ).join(adata_agg.obs))
 
+        # Get taxa loadings (biplots) - top taxa by absolute loading
+        taxa_loadings = pd.DataFrame(
+            rda_res.features,
+            index=clr_df.columns,
+            columns=['RDA1', 'RDA2']
+        )
+        top_taxa_idx = np.argsort(np.sqrt(taxa_loadings['RDA1']**2 + taxa_loadings['RDA2']**2))[-10:]  # Top 10 taxa
+        top_taxa_loadings = taxa_loadings.iloc[top_taxa_idx]
+
         # Generate plots for each priority variable
         for col in priority_vars:
             if col not in plot_df.columns:
                 continue
 
-            color_col = col if col in (cat_vars + num_vars) else None
+            # Determine if variable is numeric and handle accordingly
+            is_numeric = pd.api.types.is_numeric_dtype(plot_df[col])
+            
+            if is_numeric:
+                # For numeric variables: use colormap, handle 'Unknown' as gray
+                plot_data = plot_df.copy()
+                
+                # Convert 'Unknown' values to NaN for proper colormap handling
+                if isinstance(plot_data[col].iloc[0], str):
+                    plot_data[col] = pd.to_numeric(plot_data[col], errors='coerce')
+                
+                # Create figure with continuous colorscale
+                fig = px.scatter(
+                    plot_data,
+                    x='RDA1',
+                    y='RDA2',
+                    color=col,
+                    color_continuous_scale='Viridis',
+                    title=f"RDA ({level}) by {col} (Colormap)",
+                    opacity=0.7,
+                    labels={col: f"{col} (Colormap)"}
+                )
+                
+                # Update colorbar
+                fig.update_traces(
+                    marker=dict(colorbar=dict(title=col, thickness=15, len=0.7))
+                )
+                
+            else:
+                # For categorical variables: regular coloring, with 'Unknown' as gray
+                plot_data = plot_df.copy()
+                
+                # Map 'Unknown' values to a special color
+                color_discrete_map = {}
+                unique_vals = plot_data[col].unique()
+                for val in unique_vals:
+                    if pd.isna(val) or val == 'Unknown' or val == '':
+                        color_discrete_map[val] = 'lightgray'
+                
+                fig = px.scatter(
+                    plot_data,
+                    x='RDA1',
+                    y='RDA2',
+                    color=col,
+                    color_discrete_map=color_discrete_map,
+                    title=f"RDA ({level}) by {col}",
+                    opacity=0.7
+                )
 
-            fig = px.scatter(
-                plot_df,
-                x='RDA1',
-                y='RDA2',
-                title=f"RDA ({level}) by {col}",
-                color=color_col,
-                opacity=0.7
+            # Add taxa loading arrows (biplots) if available
+            if not top_taxa_loadings.empty:
+                for taxon in top_taxa_loadings.index[:5]:  # Top 5 taxa
+                    loading = top_taxa_loadings.loc[taxon]
+                    
+                    # Add arrow annotation
+                    fig.add_annotation(
+                        x=loading['RDA1'], y=loading['RDA2'],
+                        xanchor="center", yanchor="middle",
+                        text=str(taxon)[:20],  # Truncate long names
+                        showarrow=True,
+                        arrowhead=2,
+                        arrowsize=1,
+                        arrowwidth=2,
+                        arrowcolor="red",
+                        ax=-30, ay=-30,
+                        font=dict(size=10, color="red")
+                    )
+
+            # Update layout for better visibility
+            fig.update_layout(
+                width=1000,
+                height=700,
+                hovermode='closest',
+                plot_bgcolor='white',
+                xaxis=dict(gridcolor='lightgray', zeroline=False),
+                yaxis=dict(gridcolor='lightgray', zeroline=False)
             )
 
             plot_utils.save_plotly_fig(
@@ -357,6 +454,8 @@ def run_trajectory_analysis(adata: ad.AnnData, plot_dir: Path):
         2. PAGA overlaid on UMAP colored by facility_distance_km (if available)
     - Requires precomputed neighbors graph in adata
     """
+    logger = get_logger("workflow_16s")
+    plot_utils = PlottingUtils(logger)
     logger.info("--- Starting Trajectory Analysis (PAGA) ---")
 
     # Preprocessing for PAGA

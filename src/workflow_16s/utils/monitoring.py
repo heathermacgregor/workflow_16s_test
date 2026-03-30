@@ -1,10 +1,10 @@
+# workflow_16s/utils/monitoring.py
 """
 Performance monitoring utilities for workflow tracking.
 
 Provides memory tracking, timing decorators, and performance reporting.
 """
 
-import logging
 import time
 import psutil
 import functools
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, Optional, Callable
 from contextlib import contextmanager
 
-logger = logging.getLogger("workflow_16s")
+from workflow_16s.utils.logger import get_logger
 
 
 class PerformanceMonitor:
@@ -23,18 +23,19 @@ class PerformanceMonitor:
         self.phase_memory: Dict[str, float] = {}
         self.start_times: Dict[str, float] = {}
         self.process = psutil.Process()
+        self.logger = get_logger("workflow_16s")
         
     def start_phase(self, phase_name: str):
         """Start timing a phase."""
         self.start_times[phase_name] = time.time()
         memory_mb = self.process.memory_info().rss / (1024 * 1024)
         self.phase_memory[f"{phase_name}_start"] = memory_mb
-        logger.info(f"📊 [{phase_name}] Starting (Memory: {memory_mb:.1f} MB)")
+        self.logger.info(f"📊 [{phase_name}] Starting (Memory: {memory_mb:.1f} MB)")
     
     def end_phase(self, phase_name: str):
         """End timing a phase and log results."""
         if phase_name not in self.start_times:
-            logger.warning(f"Phase '{phase_name}' was not started")
+            self.logger.warning(f"Phase '{phase_name}' was not started")
             return
             
         elapsed = time.time() - self.start_times[phase_name]
@@ -46,7 +47,7 @@ class PerformanceMonitor:
         start_mem = self.phase_memory.get(f"{phase_name}_start", 0)
         memory_delta = memory_mb - start_mem
         
-        logger.info(
+        self.logger.info(
             f"✅ [{phase_name}] Completed in {elapsed:.1f}s "
             f"(Memory: {memory_mb:.1f} MB, Δ{memory_delta:+.1f} MB)"
         )
@@ -60,7 +61,7 @@ class PerformanceMonitor:
     def log_memory(self, label: str = "Current"):
         """Log current memory usage."""
         memory_mb = self.get_current_memory()
-        logger.debug(f"💾 {label} memory: {memory_mb:.1f} MB")
+        self.logger.debug(f"💾 {label} memory: {memory_mb:.1f} MB")
     
     def generate_summary(self, output_path: Optional[Path] = None) -> str:
         """Generate a summary report of all timings and memory usage."""
@@ -109,7 +110,7 @@ class PerformanceMonitor:
         
         if output_path:
             output_path.write_text(summary)
-            logger.info(f"Performance summary saved to: {output_path}")
+            self.logger.info(f"Performance summary saved to: {output_path}")
         
         return summary
 

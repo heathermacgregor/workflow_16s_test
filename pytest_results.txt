@@ -1,0 +1,60 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.17, pytest-8.3.5, pluggy-1.6.0 -- /usr2/people/macgregor/miniconda3/envs/workflow_16s/bin/python3.10
+cachedir: .pytest_cache
+rootdir: /auto/sahara/namib/home/macgregor/amplicon/workflow_16s
+configfile: pyproject.toml
+plugins: anyio-4.9.0, typeguard-4.4.4, dash-3.2.0, asyncio-1.3.0, mock-3.15.1, cov-7.0.0
+asyncio: mode=strict, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 31 items
+
+tests/upstream/metadata/test_complex_partitioning.py::test_partitioning_by_instrument_and_region PASSED [  3%]
+tests/upstream/metadata/test_manager.py::test_metadata_harmonization_mapping PASSED [  6%]
+tests/upstream/metadata/test_manager.py::test_metadata_cleanup_empty_columns PASSED [  9%]
+tests/upstream/metadata/test_partition.py::test_is_host_associated_positive PASSED [ 12%]
+tests/upstream/metadata/test_partition.py::test_is_host_associated_negative PASSED [ 16%]
+tests/upstream/metadata/test_partition.py::test_find_keyword_matches PASSED [ 19%]
+tests/upstream/metadata/test_processor.py::test_unpack_value_stringified_list PASSED [ 22%]
+tests/upstream/metadata/test_processor.py::test_unpack_value_stringified_dict PASSED [ 25%]
+tests/upstream/metadata/test_processor.py::test_unpack_value_numpy_nan PASSED [ 29%]
+tests/upstream/metadata/test_processor.py::test_clean_and_unpack_data PASSED [ 32%]
+tests/upstream/metadata/test_processor.py::test_run_quality_guard PASSED [ 35%]
+tests/upstream/metadata/test_processor.py::test_run_quality_guard_empty_dir PASSED [ 38%]
+tests/upstream/sequences/test_alignment.py::test_consensus_region_logic PASSED [ 41%]
+tests/upstream/sequences/test_analysis.py::test_infer_region_from_primers PASSED [ 45%]
+tests/upstream/sequences/test_analysis_io.py::test_primer_db_regex_transformation PASSED [ 48%]
+tests/upstream/sequences/test_analysis_io.py::test_vsearch_analyzer_caching PASSED [ 51%]
+tests/upstream/sequences/test_analysis_logic.py::test_primer_scoring_logic PASSED [ 54%]
+tests/upstream/sequences/test_analysis_logic.py::test_predict_best_region_tie_break PASSED [ 58%]
+tests/upstream/sequences/test_analysis_logic.py::test_estimate_subfragment_coverage PASSED [ 61%]
+tests/upstream/test_api_resilience.py::test_ena_fetcher_retry_logic PASSED [ 64%]
+tests/upstream/test_api_resilience.py::test_api_graceful_failure PASSED  [ 67%]
+tests/upstream/test_downstream_integration.py::test_anndata_metadata_alignment PASSED [ 70%]
+tests/upstream/test_downstream_integration.py::test_qiime2_command_construction PASSED [ 74%]
+tests/upstream/test_integration_real_ids.py::test_fetch_real_bioproject_metadata PASSED [ 77%]
+tests/upstream/test_integration_real_ids.py::test_fetch_real_taxonomies SKIPPED [ 80%]
+tests/upstream/test_system_resilience.py::test_disk_full_resilience PASSED [ 83%]
+tests/upstream/test_system_resilience.py::test_corrupt_fastq_validation FAILED [ 87%]
+tests/upstream/test_system_resilience.py::test_concurrency_semaphore_control PASSED [ 90%]
+tests/upstream/test_upstream.py::test_perform_discovery_semantic PASSED  [ 93%]
+tests/upstream/test_upstream.py::test_perform_osm_discovery PASSED       [ 96%]
+tests/upstream/test_upstream.py::test_sort_datasets_sieve PASSED         [100%]
+
+=================================== FAILURES ===================================
+________________________ test_corrupt_fastq_validation _________________________
+
+tmp_path = PosixPath('/opt/tmp/macgregor/pytest-of-macgregor/pytest-21/test_corrupt_fastq_validation0')
+
+    def test_corrupt_fastq_validation(tmp_path):
+        """Ensure Validate16S rejects truncated or non-gzipped files."""
+        corrupt_file = tmp_path / "corrupt.fastq.gz"
+        corrupt_file.write_text("This is not a real gzipped fastq file.")
+    
+        validator = Validate16S()
+        # Assuming validate_file is the internal check
+>       is_valid, error = validator.check_fastq_integrity(corrupt_file)
+E       AttributeError: 'Validate16S' object has no attribute 'check_fastq_integrity'
+
+tests/upstream/test_system_resilience.py:24: AttributeError
+=========================== short test summary info ============================
+FAILED tests/upstream/test_system_resilience.py::test_corrupt_fastq_validation
+=================== 1 failed, 29 passed, 1 skipped in 45.85s ===================

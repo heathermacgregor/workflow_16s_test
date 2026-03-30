@@ -1,0 +1,641 @@
+from workflow_16s.utils.analysis import AnalysisUtils
+"""
+🔬 16S Machine Learning Discovery Architecture
+Tiered Forensic Integrity Suite
+
+THE FORENSIC STRATEGY MATRIX
+-----------------------------------------------------------------------------------------
+1. ENSEMBLE DISCOVERY (Triple Consensus / Cassandra)
+   - Logic:   Runs CatBoost (Non-linear), Elastic Net (Linear), and Random Forest (Cassandra).
+   - Purpose: Features are kept ONLY if verified by all three mathematical families.
+              Reduces false positives from model-specific biases.
+
+2. BATCH_AWARE & CONQUR (Technical Correction & BPS-RF Audit)
+   - Input:   Microbiome (Batch-Centered CLR or ConQuR) + Batch ID (Encoded).
+   - Logic:   Subtracts the "Lab Effect". Validated strictly via Batch Prediction Score (BPS-RF).
+
+3. META_AWARE (Omniscient Context)
+   - Input:   Microbiome + Environmental Metadata (Encoded).
+   - Logic:   Checks if environment (pH, Temp) explains the target better than biology.
+
+4. LOPOCV (Generalization Audit)
+   - Input:   Microbiome (Global CLR).
+   - Logic:   Train on N-1 studies, Test on 1 unseen study.
+
+5. SPATIAL_CV (Geographic Audit)
+   - Input:   Microbiome (Global CLR).
+   - Logic:   Clusters samples by Lat/Lon; Test on unseen geographic blocks.
+-----------------------------------------------------------------------------------------
+"""
+
+import json
+import warnings
+import pandas as pd
+import numpy as np
+import scipy.sparse
+from pathlib import Path
+from typing import List, Optional, Dict, Any, Union, Literal
+
+from sklearn.model_selection import LeaveOneGroupOut, GroupShuffleSplit, cross_val_score
+from sklearn.cluster import KMeans
+from sklearn.linear_model import LogisticRegression, ElasticNetCV
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+
+# --- SYSTEM UTILS ---
+from workflow_16s.utils.logger import get_logger
+from workflow_16s.downstream.utils import AnalysisUtils, filter_by_prevalence
+
+# --- ML CORE ENGINES ---
+from workflow_16s.downstream.machine_learning.feature_selection.core import catboost_feature_selection
+from workflow_16s.downstream.machine_learning.utils import (
+    clean_feature_names, resolve_feature_names, align_data_robust, 
+    apply_batch_centered_clr, verify_model_outputs
+)
+from workflow_16s.downstream.machine_learning.constants import MANDATORY_METADATA
+
+# --- BATCH CONTROL & COVARIATES ---
+from workflow_16s.downstream.machine_learning.batch_control.batch_control import (
+    audit_biomarker_confidence, 
+    create_confounding_heatmap
+)
+from workflow_16s.downstream.machine_learning.batch_control.covariates import (
+    prepare_batch_covariates, 
+    calculate_batch_importance
+)
+from workflow_16s.downstream.stats.batch_correction import conqur_batch_correction as apply_conqur_correction
+
+# --- VALIDATION TIER ---
+from workflow_16s.downstream.machine_learning.validation.check_study_eligibility import StudyEligibilityManager
+from workflow_16s.downstream.machine_learning.validation.overfitting_prevention import run_comprehensive_validation
+from workflow_16s.downstream.machine_learning.validation.validation import (
+    run_shuffle_baseline, 
+    validate_consensus_panel
+)
+from workflow_16s.downstream.machine_learning.validation.quality_audit import (
+    BiomarkerAuditor, 
+    verify_run
+)
+
+# --- VISUALIZATION TIER ---
+from workflow_16s.downstream.machine_learning.visualization.features import generate_comprehensive_ml_report
+from workflow_16s.downstream.machine_learning.visualization.batch_dependency import plot_batch_dependency
+
+# --- META-ANALYSIS ---
+from workflow_16s.downstream.machine_learning.meta_analysis import (
+    perform_meta_analysis, 
+    apply_meta_consensus_weighting
+)
+
+logger = get_logger("workflow_16s")
+
+def run_catboost_selection(
+    adata: Any, 
+    catboost_output_dir: Union[str, Path], 
+    level: str = 'Genus', 
+    priority_targets: Optional[List[str]] = None, 
+    strict_targets: bool = False,
+    eligibility_mode: str = 'filter', 
+    strategies: Optional[List[str]] = None, 
+    test_size: float = 0.3, 
+    random_state: int = 42, 
+    num_features: int = 50,  # Max features to keep from each discovery method
+    n_top_final: int = 20,   # Final refined model feature count
+    method: Literal['rfe', 'shap', 'select_k_best'] = 'shap', 
+    use_permutation: bool = False, 
+    n_cpus: int = 4,
+    batch_col: str = 'batch_original',
+    meta_cols: Optional[List[str]] = None,  
+    X_custom: Optional[pd.DataFrame] = None,
+    param_grid: Optional[Dict[str, Any]] = None
+) -> List[Dict[str, Any]]:
+    """
+    Orchestrates the 16S Forensic Pipeline: Ensemble Discovery -> Refinement -> Audit.
+    """
+    logger.info(f" 🎬 Starting Forensic Discovery Engine ({level})")
+    
+    out_dir = Path(catboost_output_dir)
+    
+    # 1. Feature Engineering (Global Baseline)
+    adata_agg = AnalysisUtils.get_analysis_adata(adata, level=level)
+    if adata_agg is None or adata_agg.n_obs < 20: 
+        n_samples = adata_agg.n_obs if adata_agg is not None else 0
+        logger.warning(f"⚠️  Insufficient data for ML: {level} aggregation requires ≥20 samples, have {n_samples}. Input: {adata.n_obs} samples × {adata.n_vars} features. Skipping ML.")
+        return []
+        
+    if X_custom is None:
+        if scipy.sparse.issparse(adata_agg.X):
+            raw_counts = np.asarray(adata_agg.X.toarray()) # type: ignore
+        elif hasattr(adata_agg.X, 'toarray'):
+            raw_counts = np.asarray(adata_agg.X.toarray()) # type: ignore
+        else:
+            raw_counts = np.asarray(adata_agg.X) if isinstance(adata_agg.X, np.ndarray) else np.array(adata_agg.X)
+        feature_names = resolve_feature_names(adata_agg, level)
+        raw_counts_df = pd.DataFrame(raw_counts, index=adata_agg.obs_names, columns=feature_names)
+        
+        # Standard CLR
+        X_df = AnalysisUtils.clr_transform_from_df(raw_counts_df, pseudocount=1.0)
+    else:
+        X_df = X_custom.copy()
+        
+    X_df = clean_feature_names(X_df)
+    logger.info(f" CHECKPOINT: About to call _generate_facility_targets with {len(adata.obs.columns)} obs columns")
+    valid_targets = _generate_facility_targets(adata, priority_targets, strict_targets)
+    logger.info(f" CRITICAL: valid_targets generated - count={len(valid_targets)}, values={valid_targets}, priority={priority_targets}")
+    
+    defaults = ['baseline', 'batch_aware', 'conqur', 'meta_aware', 'lopocv', 'spatial_cv']
+    if strategies:
+        mapped_strategies = []
+        for s in strategies:
+            if s == 'agnostic': mapped_strategies.append('baseline')
+            elif s == 'batch_adjusted': mapped_strategies.append('batch_aware')
+            elif s == 'spatial': mapped_strategies.append('spatial_cv')
+            else: mapped_strategies.append(s)
+        strategies_to_run = [s for s in mapped_strategies if s in defaults]
+        strategies_to_run = list(dict.fromkeys(strategies_to_run))
+    else:
+        strategies_to_run = defaults
+
+    logger.info(f" 📋 Selected Strategies: {strategies_to_run}")
+
+    all_results = []
+    logger.info(f" 🔍 CRITICAL DEBUG: About to enter target loop. valid_targets={valid_targets}, len={len(valid_targets)}")
+    
+    for target_col in valid_targets:
+        logger.info(f" 📍 Processing Forensic Target: {target_col}")
+        
+        # Eligibility
+        eligibility = StudyEligibilityManager(adata, target_col=target_col)
+        eligibility.diagnose_studies()
+        logger.info(f" 🔍 [DEBUG] After diagnose_studies. eligibility_mode={eligibility_mode}")
+        adata_working = adata
+        if eligibility_mode == 'filter':
+            logger.info(f" 🔍 Eligibility filtering: input {len(adata)} samples")
+            adata_working = eligibility.get_filtered_adata()
+            logger.info(f" 🔍 Eligibility filtering: output {len(adata_working)} samples")
+            if len(adata_working) < 20:
+                logger.warning(f" ⚠️ Insufficient samples for ML after eligibility filtering: {len(adata_working)} < 20. Skipping target '{target_col}'.")
+                continue
+
+        # Consensus Weighting Setup
+        meta_weight_map = {}
+        logger.info(f" 🔍 [DEBUG] Before meta_analysis check. 'meta_analysis' in strategies={('meta_analysis' in strategies_to_run)}")
+        if 'meta_analysis' in strategies_to_run:
+            meta_out = out_dir / "meta_analysis" / f"{level}_{target_col}"
+            X_meta, y_meta, meta_aligned = align_data_robust(X_df, adata_working.obs, target_col)
+            meta_res = perform_meta_analysis(
+                X_meta, 
+                y_meta, 
+                meta_aligned['study_accession'].values, 
+                meta_out
+            )
+            meta_weight_map = meta_res.get('feature_importance_map', {})
+        logger.info(f" 🔍 [DEBUG] After meta_analysis block.")
+
+        # Strategy Loop
+        logger.info(f" 🔍 [DEBUG] About to create modeling_strats. strategies_to_run={strategies_to_run}")
+        modeling_strats = [s for s in strategies_to_run if s != 'meta_analysis']
+        logger.info(f" 🔄 Starting strategy loop with {len(modeling_strats)} strategies: {modeling_strats}")
+        
+        for strategy in modeling_strats:
+            try:
+                    logger.info(f" ➡️ Entering strategy loop iteration for strategy: {strategy}")
+                    target_out = out_dir / strategy / f"{level}_{target_col}"
+                    target_out.mkdir(exist_ok=True, parents=True)
+                    logger.info(f" ✅ Created output directory: {target_out}")
+
+                    X_run = X_df.copy()
+                    X_final, y_final, meta_final = align_data_robust(X_run, adata_working.obs, target_col)
+                
+                    # --- Stop the Variable Leak & Retrieve Missing Columns ---
+                    current_batch_col = batch_col if batch_col in adata_working.obs.columns else 'study_accession'
+            
+                if current_batch_col not in meta_final.columns and current_batch_col in adata_working.obs.columns:
+                    meta_final[current_batch_col] = adata_working.obs.loc[X_final.index, current_batch_col]
+                
+                if current_batch_col in meta_final.columns:
+                    # Convert to object first to break the Categorical constraint, then fill, then format as string
+                    meta_final[current_batch_col] = meta_final[current_batch_col].astype(object).fillna("unknown").astype(str)
+            
+                # --- FILTER: Rare Class Protection ---
+                if strategy in ['lopocv', 'batch_aware', 'conqur', 'spatial_cv'] and current_batch_col in meta_final.columns:
+                    batch_source = meta_final[current_batch_col]
+                    temp_df = pd.DataFrame({'target': y_final.values, 'batch': batch_source.values}, index=y_final.index)
+                    class_batch_counts = temp_df.groupby('target')['batch'].nunique()
+                    valid_classes = class_batch_counts[class_batch_counts >= 2].index.tolist()
+                
+                    if len(valid_classes) < len(class_batch_counts):
+                        dropped = set(class_batch_counts.index) - set(valid_classes)
+                        logger.warning(f" ⚠️ Dropping rare classes (unique to single batch): {dropped}")
+                        valid_mask = y_final.isin(valid_classes)
+                        X_final = X_final[valid_mask].copy()
+                        y_final = y_final[valid_mask].copy()
+                        meta_final = meta_final[valid_mask].copy()
+                    
+                        # Check if anything remains after filtering
+                        if len(X_final) < 20:
+                            logger.warning(f" ⚠️ Strategy '{strategy}': After rare class filtering, only {len(X_final)} samples remain. Minimum required: 20. Skipping.")
+                            continue
+            
+                # Log what we're processing
+                logger.info(f" 🎯 Strategy: {strategy.upper()} - {X_final.shape[0]} samples, {X_final.shape[1]} features")
+            
+                if strategy == 'batch_aware':
+                    logger.info(f" 🎯 Strategy: {strategy.upper()} - Centering CLR + Injecting Batch ID")
+                    X_final = apply_batch_centered_clr(X_final, meta_final[current_batch_col].astype(str))
+                    y_final = y_final.loc[X_final.index]
+                    meta_final = meta_final.loc[X_final.index]
+                
+                    if current_batch_col in meta_final.columns:
+                        # Forensic Audit: BPS-RF
+                        _calculate_bps_rf(X_final, meta_final[current_batch_col].astype(str))
+                        batch_codes, _ = pd.factorize(meta_final[current_batch_col].astype(str))
+                        batch_df = pd.DataFrame({current_batch_col: batch_codes}, index=meta_final.index)
+                        X_final = pd.concat([X_final, batch_df], axis=1)
+
+                elif strategy == 'conqur':
+                    logger.info(f" 🎯 Strategy: CONQUR - Conditional Quantile Regression Batch Correction")
+                
+                    # ConQuR requires raw counts. We extract the exact subset of samples that passed filtering.
+                    adata_sub = adata_working[X_final.index].copy()
+                
+                    try:
+                        # Pass raw counts into the R interoperability layer
+                        adata_corrected = apply_conqur_correction(
+                            adata=adata_sub,
+                            batch_col=current_batch_col,
+                            covariate_cols=None, 
+                            output_dir=target_out
+                        )
+                    
+                        # Convert corrected outputs back into Euclidean space (CLR) for ML pipelines
+                        corrected_counts = np.asarray(adata_corrected.X.toarray() if hasattr(adata_corrected.X, 'toarray') else adata_corrected.X)
+                        corrected_df = pd.DataFrame(corrected_counts, index=adata_corrected.obs_names, columns=resolve_feature_names(adata_corrected, level))
+                    
+                        X_final = AnalysisUtils.clr_transform_from_df(corrected_df, pseudocount=1.0)
+                        X_final = clean_feature_names(X_final)
+                    
+                        # Align one final time
+                        X_final, y_final, meta_final = align_data_robust(X_final, adata_sub.obs, target_col)
+                    
+                        if current_batch_col in meta_final.columns:
+                            logger.info(" 🛡️ Auditing ConQuR Correction via BPS-RF...")
+                            _calculate_bps_rf(X_final, meta_final[current_batch_col].astype(str))
+                        
+                except Exception as e:
+                    logger.warning(f" ⚠️ ConQuR R-Bridge failed: {e}. Falling back to robust batch CLR centering.")
+                    X_final = apply_batch_centered_clr(X_final, meta_final[current_batch_col].astype(str))
+
+            elif strategy == 'meta_aware':
+                logger.info(" 💉 Strategy: META_AWARE - Injecting Environmental Context")
+                
+                allowed_exact = [
+                    'env_biome', 'env_feature', 'env_material', 
+                    'ph', 'temperature', 'salinity', 'elevation', 'depth',
+                    'water_content', 'organic_carbon_percent', 'clay_percent', 
+                    'sand_percent', 'silt_percent'
+                ]
+                allowed_prefixes = ('SoilGrids_', 'Meteostat_', 'OpenMeteo_')
+                
+                meta_cols_to_add = [
+                    col for col in adata_working.obs.columns 
+                    if (col in allowed_exact or col.startswith(allowed_prefixes)) 
+                    and col != target_col
+                ]
+                
+                logger.info(f" ✅ Injecting {len(meta_cols_to_add)} strictly filtered environmental features...")
+                X_meta = adata_working.obs.loc[X_final.index, meta_cols_to_add].copy()
+                
+                for col in X_meta.columns:
+                    if X_meta[col].dtype == 'object' or isinstance(X_meta[col].dtype, pd.CategoricalDtype):
+                        X_meta[col] = X_meta[col].fillna("unknown").astype('category')
+                    else:
+                        X_meta[col] = pd.to_numeric(X_meta[col], errors='coerce').fillna(0)
+                        
+                X_final = pd.concat([X_final, X_meta], axis=1)
+            
+            elif strategy == 'spatial_cv':
+                logger.info(f" 🗺️ Strategy: {strategy.upper()} - Spatial Clustering")
+                if 'latitude' in meta_final and 'longitude' in meta_final:
+                    coords = meta_final[['latitude', 'longitude']].apply(pd.to_numeric, errors='coerce').fillna(0)
+                    n_samples = len(coords)
+                    n_folds = max(2, min(10, int(n_samples / 50))) 
+                    
+                    try:
+                        kmeans = KMeans(n_clusters=n_folds, random_state=random_state, n_init='auto')
+                        labels = kmeans.fit_predict(coords)
+                        meta_final['spatial_block'] = [f"Block_{i}" for i in labels]
+                        current_batch_col = 'spatial_block' 
+                        logger.info(f"   -> Created {n_folds} spatial blocks.")
+                    except Exception as e:
+                        logger.error(f" ❌ Spatial clustering failed: {e}")
+            
+            # --- Cross-Validation Setup ---
+            cv_groups, cv_strat = _setup_cv_strategy(strategy, meta_final, current_batch_col)
+            if strategy == 'baseline': cv_groups = None
+            
+            task_type = 'Regression' if pd.api.types.is_numeric_dtype(y_final) and y_final.nunique() > 10 else 'Classification'
+            
+            try:
+                # =========================================================
+                # PHASE 1: ENSEMBLE DISCOVERY (Triple Consensus / Cassandra)
+                # =========================================================
+                logger.info(f" 🔍 [Phase 01] Ensemble Discovery: Scanning {X_final.shape[1]} features...")
+                
+                # A. CatBoost Discovery
+                cb_grid = param_grid or {'depth': [4, 6, 8], 'learning_rate': [0.05, 0.1], 'l2_leaf_reg': [3, 5]}
+                cb_res = catboost_feature_selection(
+                    metadata=meta_final, features=X_final, output_dir=target_out / "discovery_catboost",
+                    group_col=target_col, cv_groups=cv_groups, cv_strategy=cv_strat,
+                    method=method, num_features=num_features, n_top_final=num_features, 
+                    task_type=task_type, random_state=random_state, thread_count=n_cpus, param_grid=cb_grid
+                )
+                cb_top = set(cb_res['top_features'])
+                
+                # B. Elastic Net Consensus
+                logger.info(" 🥅 Running Linear Consensus (Elastic Net)...")
+                linear_top = _run_linear_discovery(X_final, y_final, task_type, num_features)
+
+                # C. Cassandra Consensus (Random Forest)
+                logger.info(" 🌲 Running Cassandra Consensus (Random Forest)...")
+                rf_top = _run_rf_discovery(X_final, y_final, task_type, num_features)
+                
+                # D. Consensus Logic
+                intersection = list(cb_top.intersection(linear_top).intersection(rf_top))
+                
+                if len(intersection) >= 5:
+                    final_candidates = intersection[:n_top_final]
+                    logger.info(f" ✅ Triple Consensus: Found {len(intersection)} features across CatBoost, ElasticNet, and RF.")
+                else:
+                    dual_intersection = list(cb_top.intersection(rf_top))
+                    if len(dual_intersection) >= 5:
+                         final_candidates = dual_intersection[:n_top_final]
+                         logger.warning(f" ⚠️ Strict Triple Consensus failed. Fallback to CatBoost + Cassandra dual consensus ({len(dual_intersection)} features).")
+                    else:
+                         logger.warning(f" ⚠️ Low Consensus. Fallback: Using CatBoost top features.")
+                         final_candidates = cb_res['top_features'][:n_top_final]
+
+                # =========================================================
+                # PHASE 2: REFINEMENT
+                # =========================================================
+                logger.info(f" 🛠️ [Phase 02] Refinement: Training Final Model on {len(final_candidates)} features...")
+                
+                X_refined = X_final[final_candidates].copy()
+                refinement_grid = {
+                    'depth': [2, 3, 4], 
+                    'learning_rate': [0.03, 0.05, 0.1], 
+                    'l2_leaf_reg': [3, 5, 9], 
+                    'iterations': [500]
+                }
+                
+                final_res = catboost_feature_selection(
+                    metadata=meta_final, 
+                    features=X_refined, 
+                    output_dir=target_out / "refined_model",
+                    group_col=target_col, 
+                    cv_groups=cv_groups, 
+                    cv_strategy=cv_strat,
+                    num_features=len(final_candidates), 
+                    n_top_final=len(final_candidates),
+                    method='shap', 
+                    task_type=task_type, 
+                    random_state=random_state, 
+                    thread_count=n_cpus, 
+                    param_grid=refinement_grid
+                )
+                
+                # =========================================================
+                # PHASE 3: FORENSIC AUDITS
+                # =========================================================
+                # 3A. Information Leakage Audit
+                _audit_information_leakage(X_refined, adata_working, final_candidates)
+
+                # 3B. Covariate / Confounding Audit
+                logger.info(" 🛡️ Running Biomarker Confidence Audit against technical covariates...")
+                batch_covs, _ = prepare_batch_covariates(adata_working, [current_batch_col], X_refined.index)
+                
+                if not batch_covs.empty:
+                    conf_df, exclusions = audit_biomarker_confidence(X_refined, batch_covs, final_candidates)
+                    conf_df.to_csv(target_out / "biomarker_confidence_audit.csv", index=False)
+                    create_confounding_heatmap(X_refined, batch_covs, final_candidates, target_out, target_col, level)
+
+                if meta_weight_map:
+                    global_imp = pd.DataFrame({'feature': final_res['top_features'], 'importance': final_res['feature_importances']})
+                    weighted_df = apply_meta_consensus_weighting(
+                        global_imp, 
+                        {'feature_importance_map': meta_weight_map}
+                    )
+                    weighted_df.to_csv(target_out / "robustness_weighted_biomarkers.csv", index=False)
+                    plot_batch_dependency(
+                        global_imp, 
+                        target_out / "batch_dependency_donut.html",
+                        target_col
+                    )
+
+                run_comprehensive_validation(
+                    final_res['model'], 
+                    X_refined, 
+                    y_final, 
+                    output_dir=target_out / "audit", 
+                    target_name=target_col,
+                    groups=cv_groups.values if cv_groups is not None else None, # type: ignore
+                    task_type=task_type
+                )
+                
+                run_shuffle_baseline(
+                    adata_working, 
+                    target_col, 
+                    target_out / "significance", 
+                    real_score=final_res.get('best_score', 0.0), 
+                    level=level
+                )
+
+                final_res['strategy'] = strategy
+                all_results.append(final_res)
+
+            except Exception as e:
+                logger.error(f" ❌ Strategy {strategy} failed: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
+
+        verify_run(out_dir, [target_col])
+    
+    generate_comprehensive_ml_report(
+        out_dir, 
+        str(out_dir / "summary_report.html"), 
+        ml_targets=valid_targets, 
+        strategies=strategies_to_run
+    )
+    return all_results
+
+def _run_linear_discovery(
+    X: pd.DataFrame, 
+    y: pd.Series, 
+    task_type: str, 
+    n_top: int = 50
+) -> set:
+    """Runs a robust linear scan for consensus using Elastic Net."""
+    logger = get_logger("workflow_16s")
+    try:
+        scaler = StandardScaler()
+        X_scaled = pd.DataFrame(scaler.fit_transform(X), index=X.index, columns=X.columns).fillna(0)
+        
+        if task_type == 'Classification':
+            model = LogisticRegression(
+                penalty='elasticnet', solver='saga', 
+                l1_ratio=0.7, C=1.0, max_iter=2000,
+                class_weight='balanced', n_jobs=-1, random_state=42
+            )
+        else:
+            model = ElasticNetCV(
+                l1_ratio=[.1, .5, .7, .9, .95, .99], cv=3, 
+                max_iter=2000, n_jobs=-1, random_state=42
+            )
+            
+        model.fit(X_scaled, y)
+        
+        if task_type == 'Classification':
+            coefs = np.mean(np.abs(model.coef_), axis=0) if model.coef_.ndim > 1 else np.abs(model.coef_.flatten())
+        else:
+            coefs = np.abs(model.coef_)
+            
+        non_zero_mask = coefs > 1e-5
+        if non_zero_mask.sum() > 0:
+            top_features = X.columns[non_zero_mask].tolist()
+            if len(top_features) > n_top:
+                top_idx = np.argsort(coefs)[::-1][:n_top]
+                return set(X.columns[top_idx])
+            return set(top_features)
+        
+        top_idx = np.argsort(coefs)[::-1][:n_top]
+        return set(X.columns[top_idx])
+        
+    except Exception as e:
+        logger.warning(f" ⚠️ Linear discovery failed: {e}. Returning empty set.")
+        return set()
+
+def _run_rf_discovery(
+    X: pd.DataFrame, 
+    y: pd.Series, 
+    task_type: str, 
+    n_top: int = 50
+) -> set:
+    """Runs a robust Cassandra (Random Forest) scan for consensus."""
+    logger = get_logger("workflow_16s")
+    try:
+        X_clean = X.copy()
+        for col in X_clean.select_dtypes(include=['object', 'category']).columns:
+            X_clean[col] = X_clean[col].astype('category').cat.codes
+
+        if task_type == 'Classification':
+            model = RandomForestClassifier(n_estimators=200, class_weight='balanced', random_state=42, n_jobs=-1)
+        else:
+            model = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
+        
+        model.fit(X_clean, y)
+        importances = model.feature_importances_
+        
+        top_idx = np.argsort(importances)[::-1][:n_top]
+        return set(X_clean.columns[top_idx])
+    except Exception as e:
+        logger.warning(f" ⚠️ Cassandra (RF) discovery failed: {e}. Returning empty set.")
+        return set()
+
+def _calculate_bps_rf(X_corrected: pd.DataFrame, batches: pd.Series) -> float:
+    """Calculates the Batch Prediction Score (BPS-RF). Low score = Good."""
+    logger = get_logger("workflow_16s")
+    if batches.nunique() <= 1: 
+        return 0.0
+    
+    X_num = X_corrected.select_dtypes(include=[np.number])
+    if X_num.empty: return 0.0
+
+    rf = RandomForestClassifier(n_estimators=50, max_depth=5, random_state=42, n_jobs=-1)
+    
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from sklearn.model_selection import StratifiedKFold
+        cv = StratifiedKFold(n_splits=min(3, batches.value_counts().min())) if batches.value_counts().min() >= 2 else 2
+        scores = cross_val_score(rf, X_num, batches, cv=cv, scoring='accuracy')
+    
+    bps_score = np.mean(scores)
+    
+    if bps_score > 0.5:
+        logger.error(f" ❌ BPS-RF FAILED: Model can still predict batch with {bps_score:.2f} accuracy after correction.")
+    else:
+        logger.info(f" ✅ BPS-RF PASSED: Batch prediction accuracy is low ({bps_score:.2f}).")
+    return bps_score
+
+def _audit_information_leakage(X_refined: pd.DataFrame, adata: Any, top_features: List[str]):
+    """Audits final features against alpha diversity to detect CLR leakage."""
+    logger = get_logger("workflow_16s")
+    
+    shannon_col = next((col for col in adata.obs.columns if 'shannon' in col.lower()), None)
+    
+    if shannon_col:
+        shannon = adata.obs.loc[X_refined.index, shannon_col]
+        shannon = pd.to_numeric(shannon, errors='coerce').fillna(0)
+        
+        for feat in top_features:
+            if feat in X_refined.columns:
+                feat_data = pd.to_numeric(X_refined[feat], errors='coerce').fillna(0)
+                corr = np.abs(feat_data.corr(shannon))
+                if corr > 0.80:
+                    logger.warning(f" ⚠️ LEAKAGE DETECTED: Feature '{feat}' has r={corr:.2f} with {shannon_col}. This may be a CLR mathematical artifact!")
+    else:
+        logger.debug("No Shannon diversity column found. Skipping information leakage audit.")
+
+
+def _generate_facility_targets(
+    adata: Any, 
+    priority_targets: Optional[List[str]], 
+    strict_targets: bool = False
+) -> List[str]:
+    """Generates boolean match columns for facility-type metadata."""
+    targets_to_use = list(priority_targets) if priority_targets else []
+    type_col, match_col = 'facility_type', 'Env_Level_1'
+    
+    if type_col in adata.obs.columns and match_col in adata.obs.columns:
+        if pd.api.types.is_bool_dtype(adata.obs[match_col]):
+            matched_mask = adata.obs[match_col]
+        else:
+            matched_mask = adata.obs[match_col].astype(str).str.lower() == 'true'
+
+        unique_types = adata.obs.loc[matched_mask, type_col].unique()
+        for f_type in unique_types:
+            if pd.isna(f_type) or f_type in ['None', 'Analog', 'unknown']: continue
+            col_name = f"facility_match_{str(f_type).replace(' ', '_').lower()}"
+            is_match = matched_mask
+            is_type = adata.obs[type_col] == f_type
+            adata.obs[col_name] = (is_match & is_type).astype(int).astype(str)
+            if col_name not in targets_to_use: targets_to_use.append(col_name)
+    
+    if not targets_to_use and not strict_targets:
+        defaults = ['Env_Level_1', 'Env_Level_2']
+        targets_to_use = [t for t in defaults if t in adata.obs.columns]
+        
+    return [t for t in targets_to_use if t in adata.obs.columns]
+
+def _setup_cv_strategy(
+    strategy: str, 
+    meta: pd.DataFrame, 
+    batch_col: str
+) -> tuple[Optional[pd.Series], Optional[Any]]:
+    """Configures CV."""
+    logger = get_logger("workflow_16s")
+    cv_groups, cv_strategy_obj = None, None
+    
+    if batch_col in meta.columns:
+        groups = meta[batch_col].astype(str)
+        n_groups = groups.nunique()
+        
+        if strategy in ['lopocv', 'batch_aware', 'conqur', 'meta_aware', 'spatial_cv']:
+            if n_groups < 2:
+                logger.warning(f" ⚠️ Strategy {strategy} needs >=2 groups ({n_groups} found). Reverting to baseline.")
+                return None, None
+            
+            cv_groups = groups
+            cv_strategy_obj = LeaveOneGroupOut()
+            logger.info(f" 🗒️ CV Strategy: Leave-One-Group-Out on '{batch_col}' ({n_groups} groups)")
+            
+    return cv_groups, cv_strategy_obj

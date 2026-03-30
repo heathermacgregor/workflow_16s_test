@@ -1,37 +1,38 @@
-# ===================================== IMPORTS ====================================== #
+# workflow_16s/upstream/sequences/processing.py
 
-# Standard Library Imports
-import logging
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-# Third-Party Imports
 import pandas as pd
 
-# Local Imports
 from workflow_16s.api.ena.sequences import PooledSamplesProcessor, SequenceFetcher
-from workflow_16s.config_schema import AppConfig
-from workflow_16s.upstream.sequences.utils import BasicStats, CutAdapt, FastQC, SeqKit
+from workflow_16s.config import AppConfig
 from workflow_16s.utils.dir_utils import SubSet, RawData
+from workflow_16s.utils.logger import get_logger
 
-# ========================== INITIALIZATION & CONFIGURATION ========================== #
+from workflow_16s.upstream.sequences.cutadapt import CutAdaptWrapper
+from workflow_16s.upstream.sequences.fastqc import FastQCWrapper
+from workflow_16s.upstream.sequences.seqkit import SeqKitWrapper
 
-logger = logging.getLogger("workflow_16s")
-
-# ==================================== FUNCTIONS ===================================== #
 
 def process_sequences(
     config: AppConfig, subset: Dict[str, Any], subset_dirs: SubSet, info: Any
-) -> Tuple[Dict[str, List[str]] | List[Path], pd.DataFrame]:
+) -> Tuple[Dict[str, List[Path]], pd.DataFrame]:
+    logger = get_logger("workflow_16s")
     run_fastqc = config.sequences.quality_control.fastqc.enabled
     run_seqkit = config.sequences.quality_control.seqkit.enabled
     run_cutadapt = config.sequences.trim.cutadapt.enabled
     
     dataset_type = info.get('dataset_type', '').upper()
 
+    # --- 1. FETCH RAW DATA ---
     if dataset_type == 'ENA':
         fetcher = SequenceFetcher(
-            RawData(subset_dirs).raw_seqs, 10, 5, config.sequences.ena.max_concurrent
+            fastq_dir=RawData(subset_dirs).raw_seqs, 
+            retries=10, 
+            initial_delay=5, 
+            max_workers=config.sequences.ena.max_concurrent,
+            progress_obj=None
         )
     
         if not subset["sample_pooling"]:
@@ -40,95 +41,96 @@ def process_sequences(
         else:
             raw_seqs_paths = fetcher.download_run_fastq_concurrent(subset["ena_runs"])
             processor = PooledSamplesProcessor(
-                subset["metadata"], RawData(subset_dirs).raw_seqs / 'sorted'
+                metadata_df=subset["metadata"], 
+                output_dir=RawData(subset_dirs).raw_seqs / 'sorted',
+                progress_obj=None
             )
             processor.process_all(RawData(subset_dirs).raw_seqs)
             raw_seqs_paths = processor.sample_file_map    
     else:
         raise ValueError(f"Dataset type '{dataset_type}' not recognized. Expected 'ENA'.")
         
+    # Standardize paths to Path objects
+    raw_seqs_paths = {k: [Path(p) for p in v] for k, v in raw_seqs_paths.items()}
     raw_df = pd.DataFrame()
-    if run_cutadapt: 
-        seq_analyzer = BasicStats()
-        # Ensure values are lists of Path objects for type compatibility
-        stats_input = {
-            k: [Path(p) for p in v] 
-            for k, v in raw_seqs_paths.items()
-        } if isinstance(raw_seqs_paths, dict) else raw_seqs_paths
-        raw_stats = seq_analyzer.calculate_statistics(stats_input)  # type: ignore
-        raw_df = pd.DataFrame([
-            {"Metric": k, "Raw": v} 
-            for k, v in raw_stats["overall"].items()
-        ])
+
+    # --- 2. RAW DATA QC (BasicStats replaced by SeqKit) ---
+    if run_seqkit:
+        # Run SeqKit ONCE to get all basic stats and length distributions (Fixes Double I/O)
+        seqkit_wrapper = SeqKitWrapper(max_workers=config.sequences.quality_control.seqkit.max_workers)
+        raw_seqkit_df = seqkit_wrapper.analyze(raw_seqs_paths)
+        
+        # Extract the OVERALL row to populate the legacy stats dictionary
+        if not raw_seqkit_df.empty and 'OVERALL' in raw_seqkit_df['sample'].values:
+            overall = raw_seqkit_df[raw_seqkit_df['sample'] == 'OVERALL'].iloc[0]
+            raw_df = pd.DataFrame([
+                {"Metric": "Total Sequences", "Raw": overall.get("num_seqs", 0)},
+                {"Metric": "Total Bases", "Raw": overall.get("sum_len", 0)},
+                {"Metric": "Average Length", "Raw": overall.get("avg_len", 0)},
+                {"Metric": "Min Length", "Raw": overall.get("min_len", 0)},
+                {"Metric": "Max Length", "Raw": overall.get("max_len", 0)}
+            ])
+            logger.info(f"\n=== Raw Data Summary ===\n"
+                        f"Total Sequences: {overall.get('num_seqs', 0):,}\n"
+                        f"Total Bases:     {overall.get('sum_len', 0):,}\n"
+                        f"Average Length:  {overall.get('avg_len', 0):.2f} bp")
 
     if run_fastqc:
-        fastqc_input = {
-            k: [Path(p) for p in v] 
-            for k, v in raw_seqs_paths.items()
-        } if isinstance(raw_seqs_paths, dict) else raw_seqs_paths
-        FastQC(fastqc_input, RawData(subset_dirs).raw_seqs).run_pipeline()
-
-    if run_seqkit:
-        seqkit_input = {k: [Path(p) for p in v] 
-                        for k, v in raw_seqs_paths.items()} if isinstance(raw_seqs_paths, dict) else raw_seqs_paths
-        raw_stats_seqkit = SeqKit(config.sequences.quality_control.seqkit.max_workers).analyze_samples(seqkit_input)  # type: ignore
-        stats = raw_stats_seqkit["overall"]
-        N = 20
-        report = (
-            f"\n=== Summary ===\n"
-            f"{'Total Samples'.ljust(N)}: {stats['total_samples']}\n"
-            f"{'Total Files'.ljust(N)}: {stats['total_files']}\n"
-            f"{'Total Sequences'.ljust(N)}: {stats['total_sequences']:,}\n"
-            f"{'Total Bases'.ljust(N)}: {stats['total_bases']:,}\n\n"
-                "=== Length Distribution ===\n"
-            f"{'Average Length'.ljust(N)}: {stats['avg_length']:.2f}\n"
-            f"{'Minimum Length'.ljust(N)}: {stats['min_length']}\n"
-            f"{'Maximum Length'.ljust(N)}: {stats['max_length']}\n\n"
-                "=== Most Common Lengths ===\n"
-                + "".join(
-                    f"{rank:>2}. {length:3} bp - {count:>9,} sequences\n"
-                    for rank, (length, count) in enumerate(
-                        stats["most_common_lengths"], start=1
-                    )
-                )
+        FastQCWrapper(max_workers=config.sequences.quality_control.fastqc.max_workers).run_and_parse(
+            sample_files=raw_seqs_paths, 
+            output_dir=RawData(subset_dirs).raw_seqs / 'fastqc_results'
         )
-        logger.info(report)
-        
+
+    # --- 3. CUTADAPT TRIMMING ---
     processed_paths = raw_seqs_paths
     stats_df = pd.DataFrame()
     
     if run_cutadapt:
-        cutadapt_input = raw_seqs_paths
         cutadapt_config = config.sequences.trim.cutadapt
-        trimmed_seqs_paths, *_ = CutAdapt(
-            RawData(subset_dirs).raw_seqs, RawData(subset_dirs).trimmed_seqs,
-            subset["pcr_primer_fwd_seq"], subset["pcr_primer_rev_seq"],
-            cutadapt_config.start_trim, cutadapt_config.end_trim,
-            cutadapt_config.start_q_cutoff, cutadapt_config.end_q_cutoff,
-            cutadapt_config.min_seq_length, cutadapt_config.n_cores, True,
-            subset["target_subfragment"]
-        ).run(cutadapt_input)
+        
+        # Initialize CutAdapt (Fixes Nested Parallelism by setting cores_per_job=1)
+        wrapper = CutAdaptWrapper(
+            fwd_primer=subset["pcr_primer_fwd_seq"],
+            rev_primer=subset["pcr_primer_rev_seq"],
+            min_length=cutadapt_config.min_seq_length,
+            quality_cutoff=cutadapt_config.end_q_cutoff, 
+            cores_per_job=1  # ⚠️ CRITICAL: Let ThreadPoolExecutor handle concurrency!
+        )
+        
+        trimmed_seqs_paths, trim_summary_df = wrapper.trim(
+            sample_files=raw_seqs_paths,
+            output_dir=RawData(subset_dirs).trimmed_seqs,
+            max_workers=cutadapt_config.n_cores  # Parallelize across files here
+        )
         processed_paths = trimmed_seqs_paths
-        seq_analyzer = BasicStats()
-        stats_input = {k: [Path(p) for p in v] for k, v in trimmed_seqs_paths.items()}
-        trimmed_stats = seq_analyzer.calculate_statistics(stats_input)  # type: ignore
-        trimmed_df = pd.DataFrame([
-            {"Metric": k, "Trimmed": v} 
-            for k, v in trimmed_stats["overall"].items()
-        ])
-        stats_df = pd.merge(raw_df, trimmed_df, on="Metric")
-        stats_df["Percent Change"] = ((stats_df["Trimmed"] - stats_df["Raw"]) / stats_df["Raw"]) * 100
-        stats_df[["Raw", "Trimmed", "Percent Change"]] = stats_df[["Raw", "Trimmed", "Percent Change"]].map(lambda x: f"{x:.2f}" if isinstance(x, float) else x)
-        stats_df = stats_df.dropna(axis=1, how="all")
 
-    if run_cutadapt and run_fastqc:
-        fastqc_input = {k: [Path(p) for p in v] 
-                        for k, v in processed_paths.items()} if isinstance(processed_paths, dict) else processed_paths
-        FastQC(fastqc_input, RawData(subset_dirs).trimmed_seqs).run_pipeline()
+        # --- 4. TRIMMED DATA QC ---
+        if run_seqkit:
+            # We run SeqKit again on the trimmed data to populate the comparison DataFrame
+            trimmed_seqkit_df = seqkit_wrapper.analyze(processed_paths)
+            
+            if not trimmed_seqkit_df.empty and 'OVERALL' in trimmed_seqkit_df['sample'].values:
+                overall_trim = trimmed_seqkit_df[trimmed_seqkit_df['sample'] == 'OVERALL'].iloc[0]
+                trimmed_df = pd.DataFrame([
+                    {"Metric": "Total Sequences", "Trimmed": overall_trim.get("num_seqs", 0)},
+                    {"Metric": "Total Bases", "Trimmed": overall_trim.get("sum_len", 0)},
+                    {"Metric": "Average Length", "Trimmed": overall_trim.get("avg_len", 0)},
+                    {"Metric": "Min Length", "Trimmed": overall_trim.get("min_len", 0)},
+                    {"Metric": "Max Length", "Trimmed": overall_trim.get("max_len", 0)}
+                ])
+                
+                # Merge Raw and Trimmed stats
+                if not raw_df.empty:
+                    stats_df = pd.merge(raw_df, trimmed_df, on="Metric")
+                    stats_df["Percent Change"] = ((stats_df["Trimmed"] - stats_df["Raw"]) / stats_df["Raw"]) * 100
+                    stats_df[["Raw", "Trimmed", "Percent Change"]] = stats_df[["Raw", "Trimmed", "Percent Change"]].map(
+                        lambda x: f"{x:.2f}" if isinstance(x, float) else x
+                    )
 
-    if run_cutadapt and run_seqkit:
-        seqkit_input = {k: [Path(p) for p in v] 
-                        for k, v in processed_paths.items()} if isinstance(processed_paths, dict) else processed_paths
-        SeqKit(config.sequences.quality_control.seqkit.max_workers).analyze_samples(seqkit_input)  # type: ignore
+        if run_fastqc:
+            FastQCWrapper(max_workers=config.sequences.quality_control.fastqc.max_workers).run_and_parse(
+                sample_files=processed_paths, 
+                output_dir=RawData(subset_dirs).trimmed_seqs / 'fastqc_results'
+            )
 
     return processed_paths, stats_df

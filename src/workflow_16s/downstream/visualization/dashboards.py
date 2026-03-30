@@ -4,6 +4,8 @@ Interactive Dashboard Generation for Comprehensive Analysis Summary.
 This module creates publication-ready HTML dashboards that integrate results from
 multiple analysis modules into unified, interactive visualizations.
 
+Uses the 'heather' custom Plotly template for professional, consistent aesthetic.
+
 Features:
 1. Integrated multi-panel dashboards (12-panel layout)
 2. QC impact visualization
@@ -38,8 +40,28 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
+import plotly.io as pio
 
 logger = logging.getLogger('workflow_16s')
+
+# Ensure heather template is registered
+try:
+    if 'heather' not in pio.templates:
+        # Register heather template if not already registered
+        heather = go.layout.Template(
+            layout=go.Layout(
+                colorway=['#8B7BA4', '#A89CC4', '#C4B8D1', '#6B6B7A', '#9A8E99', '#7A9E8F', '#B8A89C'],
+                paper_bgcolor='#FAFAF9',
+                plot_bgcolor='#FFFFFF',
+                font=dict(family="Arial, sans-serif", size=12, color='#3D3D3D'),
+                xaxis=dict(showgrid=True, gridwidth=1, gridcolor='#E8E8E6', showline=True, linewidth=1, linecolor='#9A9A99'),
+                yaxis=dict(showgrid=True, gridwidth=1, gridcolor='#E8E8E6', showline=True, linewidth=1, linecolor='#9A9A99'),
+                legend=dict(bgcolor='rgba(255, 255, 255, 0.8)', bordercolor='#9A9A99', borderwidth=1)
+            )
+        )
+        pio.templates['heather'] = heather
+except Exception as e:
+    logger.warning(f"Could not register heather template: {e}")
 
 
 def create_integrated_dashboard(
@@ -139,52 +161,75 @@ def create_integrated_dashboard(
         fig, adata, stats_results, qc_results, row=4, col=3
     )
     
-    # Update layout
+    # Update layout with heather template
     fig.update_layout(
-        title_text="<b>Integrated Analysis Dashboard</b>",
-        title_x=0.5,
-        title_font_size=24,
-        height=1800,
-        width=1800,
+        title=dict(
+            text="<b>Integrated Analysis Dashboard</b>",
+            x=0.5,
+            xanchor='center',
+            font=dict(size=26, color='#2D2D2D', family='Arial, sans-serif')
+        ),
+        height=1900,
+        width=1900,
         showlegend=True,
-        template='plotly_white'
+        template='heather',
+        hovermode='closest',
+        margin=dict(l=80, r=80, t=120, b=80)
     )
     
     if output_path:
         fig.write_html(output_path)
-        logger.info(f"Saved integrated dashboard to {output_path}")
+        logger.info(f"✅ Integrated dashboard saved to {output_path}")
     
     return fig
 
 
 def _add_qc_summary_panel(fig: go.Figure, qc_results: Dict, row: int, col: int):
-    """Add QC summary bar chart."""
+    """
+    Add QC summary bar chart with heather color scheme.
+    
+    Args:
+        fig: Plotly figure to add trace to
+        qc_results: QC results dictionary
+        row: Subplot row
+        col: Subplot column
+    """
     categories = ['Passed', 'Warning', 'Failed']
     counts = [
         qc_results.get('n_passed', 0),
         qc_results.get('n_warning', 0),
         qc_results.get('n_failed', 0)
     ]
-    colors = ['green', 'orange', 'red']
+    
+    # Heather color scheme for QC status
+    heather_colors = ['#7A9E8F', '#C9A876', '#A85A5A']  # sage, amber, red
     
     fig.add_trace(
         go.Bar(
             x=categories,
             y=counts,
-            marker_color=colors,
+            marker=dict(
+                color=heather_colors,
+                line=dict(color='#6B6B7A', width=1.5)
+            ),
             text=counts,
-            textposition='auto',
-            name='QC Status'
+            textposition='outside',
+            name='QC Status',
+            hovertemplate='<b>%{x}</b><br>Count: %{y}<extra></extra>'
         ),
         row=row, col=col
     )
     
-    fig.update_xaxes(title_text="QC Status", row=row, col=col)
-    fig.update_yaxes(title_text="Sample Count", row=row, col=col)
+    fig.update_xaxes(title_text="<b>QC Status</b>", row=row, col=col)
+    fig.update_yaxes(title_text="<b>Sample Count</b>", row=row, col=col)
 
 
 def _add_sample_distribution_panel(fig: go.Figure, adata: ad.AnnData, row: int, col: int):
-    """Add sample distribution by primary grouping variable."""
+    """
+    Add sample distribution by primary grouping variable.
+    
+    Uses heather color scheme for consistent styling.
+    """
     # Find primary grouping column (most commonly used)
     group_cols = [c for c in adata.obs.columns if adata.obs[c].dtype == 'object']
     
@@ -196,20 +241,26 @@ def _add_sample_distribution_panel(fig: go.Figure, adata: ad.AnnData, row: int, 
             go.Bar(
                 x=value_counts.index.tolist(),
                 y=value_counts.values.tolist(),
-                marker_color='steelblue',
+                marker=dict(
+                    color='#8B7BA4',
+                    line=dict(color='#6B6B7A', width=1.5)
+                ),
                 text=value_counts.values,
-                textposition='auto',
-                name='Samples'
+                textposition='outside',
+                name='Samples',
+                hovertemplate='<b>%{x}</b><br>Count: %{y}<extra></extra>'
             ),
             row=row, col=col
         )
         
-        fig.update_xaxes(title_text=primary_col, row=row, col=col)
-        fig.update_yaxes(title_text="Sample Count", row=row, col=col)
+        fig.update_xaxes(title_text=f"<b>{primary_col}</b>", row=row, col=col)
+        fig.update_yaxes(title_text="<b>Sample Count</b>", row=row, col=col)
 
 
 def _add_sequencing_depth_panel(fig: go.Figure, adata: ad.AnnData, row: int, col: int):
-    """Add sequencing depth distribution."""
+    """
+    Add sequencing depth distribution with heather styling.
+    """
     # Calculate read counts per sample
     if hasattr(adata.X, 'toarray'):
         read_counts = adata.X.toarray().sum(axis=1)
@@ -223,8 +274,12 @@ def _add_sequencing_depth_panel(fig: go.Figure, adata: ad.AnnData, row: int, col
         go.Histogram(
             x=read_counts,
             nbinsx=30,
-            marker_color='teal',
-            name='Read Depth'
+            marker=dict(
+                color='#7A9E8F',
+                line=dict(color='#6B6B7A', width=0.5)
+            ),
+            name='Read Depth',
+            hovertemplate='Reads: %{x:.0f}<br>Count: %{y}<extra></extra>'
         ),
         row=row, col=col
     )
@@ -234,17 +289,20 @@ def _add_sequencing_depth_panel(fig: go.Figure, adata: ad.AnnData, row: int, col
     fig.add_vline(
         x=median_depth,
         line_dash="dash",
-        line_color="red",
-        annotation_text=f"Median: {int(median_depth):,}",
+        line_color='#A85A5A',
+        line_width=2,
+        annotation_text=f"<b>Median: {int(median_depth):,}</b>",
         row=row, col=col
     )
     
-    fig.update_xaxes(title_text="Reads per Sample", type="log", row=row, col=col)
-    fig.update_yaxes(title_text="Sample Count", row=row, col=col)
+    fig.update_xaxes(title_text="<b>Reads per Sample</b>", type="log", row=row, col=col)
+    fig.update_yaxes(title_text="<b>Sample Count</b>", row=row, col=col)
 
 
 def _add_alpha_diversity_panel(fig: go.Figure, alpha_results: Dict, row: int, col: int):
-    """Add alpha diversity comparison."""
+    """
+    Add alpha diversity comparison with heather styling.
+    """
     # Extract first metric for display
     if 'shannon' in alpha_results:
         metric_data = alpha_results['shannon']
@@ -257,17 +315,20 @@ def _add_alpha_diversity_panel(fig: go.Figure, alpha_results: Dict, row: int, co
         go.Box(
             y=metric_data.get('values', []),
             name='Alpha Diversity',
-            marker_color='purple'
+            marker=dict(color='#A89CC4'),
+            hovertemplate='Shannon: %{y:.2f}<extra></extra>'
         ),
         row=row, col=col
     )
     
     fig.update_xaxes(title_text="", row=row, col=col)
-    fig.update_yaxes(title_text="Shannon Diversity", row=row, col=col)
+    fig.update_yaxes(title_text="<b>Shannon Diversity</b>", row=row, col=col)
 
 
 def _add_beta_diversity_panel(fig: go.Figure, beta_results: Dict, row: int, col: int):
-    """Add beta diversity ordination."""
+    """
+    Add beta diversity ordination with heather styling.
+    """
     # Extract PCoA coordinates
     if 'pcoa' in beta_results:
         pcoa_data = beta_results['pcoa']
@@ -279,18 +340,26 @@ def _add_beta_diversity_panel(fig: go.Figure, beta_results: Dict, row: int, col:
                 x=pc1,
                 y=pc2,
                 mode='markers',
-                marker=dict(size=8, color='darkblue', opacity=0.6),
-                name='Samples'
+                marker=dict(
+                    size=8,
+                    color='#8B7BA4',
+                    opacity=0.7,
+                    line=dict(color='#6B6B7A', width=0.5)
+                ),
+                name='Samples',
+                hovertemplate='PC1: %{x:.2f}<br>PC2: %{y:.2f}<extra></extra>'
             ),
             row=row, col=col
         )
         
-        fig.update_xaxes(title_text="PC1", row=row, col=col)
-        fig.update_yaxes(title_text="PC2", row=row, col=col)
+        fig.update_xaxes(title_text="<b>PC1</b>", row=row, col=col)
+        fig.update_yaxes(title_text="<b>PC2</b>", row=row, col=col)
 
 
 def _add_top_taxa_panel(fig: go.Figure, adata: ad.AnnData, row: int, col: int):
-    """Add top 10 most abundant taxa."""
+    """
+    Add top 10 most abundant taxa with heather styling.
+    """
     # Calculate mean abundance per feature
     if hasattr(adata.X, 'toarray'):
         mean_abundance = adata.X.toarray().mean(axis=0)
@@ -310,31 +379,37 @@ def _add_top_taxa_panel(fig: go.Figure, adata: ad.AnnData, row: int, col: int):
             x=top_abundances,
             y=top_features,
             orientation='h',
-            marker_color='coral',
-            name='Top Taxa'
+            marker=dict(
+                color='#B8A89C',
+                line=dict(color='#6B6B7A', width=1)
+            ),
+            name='Top Taxa',
+            hovertemplate='<b>%{y}</b><br>Mean Abundance: %{x:.4f}<extra></extra>'
         ),
         row=row, col=col
     )
     
-    fig.update_xaxes(title_text="Mean Abundance", row=row, col=col)
+    fig.update_xaxes(title_text="<b>Mean Abundance</b>", row=row, col=col)
     fig.update_yaxes(title_text="", row=row, col=col)
 
 
 def _add_statistical_results_panel(
     fig: go.Figure, stats_results: pd.DataFrame, row: int, col: int
 ):
-    """Add volcano plot of statistical results."""
+    """
+    Add volcano plot of statistical results with heather styling.
+    """
     if 'p_adj' not in stats_results.columns or 'log2_fold_change' not in stats_results.columns:
         return
     
     # Calculate -log10(p)
     neg_log_p = -np.log10(stats_results['p_adj'].replace(0, 1e-300))
     
-    # Color by significance
+    # Color by significance (heather palette)
     colors = np.where(
         (stats_results['p_adj'] < 0.05) & (stats_results['log2_fold_change'].abs() > 1),
-        'red',
-        'gray'
+        '#A85A5A',  # Heather red for significant
+        '#C4B8D1'   # Pale heather for non-significant
     )
     
     fig.add_trace(
@@ -342,40 +417,62 @@ def _add_statistical_results_panel(
             x=stats_results['log2_fold_change'],
             y=neg_log_p,
             mode='markers',
-            marker=dict(size=6, color=colors, opacity=0.6),
+            marker=dict(
+                size=7,
+                color=colors,
+                opacity=0.7,
+                line=dict(color='#6B6B7A', width=0.5)
+            ),
             text=stats_results['feature'],
-            name='Features'
+            name='Features',
+            hovertemplate='<b>%{text}</b><br>Log2FC: %{x:.2f}<br>-log10(p): %{y:.2f}<extra></extra>'
         ),
         row=row, col=col
     )
     
     # Add significance thresholds
-    fig.add_hline(y=-np.log10(0.05), line_dash="dash", line_color="blue", row=row, col=col)
-    fig.add_vline(x=-1, line_dash="dash", line_color="blue", row=row, col=col)
-    fig.add_vline(x=1, line_dash="dash", line_color="blue", row=row, col=col)
+    fig.add_hline(y=-np.log10(0.05), line_dash="dash", line_color='#9A9A99', line_width=1.5, row=row, col=col)
+    fig.add_vline(x=-1, line_dash="dash", line_color='#9A9A99', line_width=1.5, row=row, col=col)
+    fig.add_vline(x=1, line_dash="dash", line_color='#9A9A99', line_width=1.5, row=row, col=col)
     
-    fig.update_xaxes(title_text="Log2 Fold Change", row=row, col=col)
-    fig.update_yaxes(title_text="-log10(p-adj)", row=row, col=col)
+    fig.update_xaxes(title_text="<b>Log2 Fold Change</b>", row=row, col=col)
+    fig.update_yaxes(title_text="<b>-log10(p-adj)</b>", row=row, col=col)
 
 
 def _add_effect_sizes_panel(
     fig: go.Figure, stats_results: pd.DataFrame, row: int, col: int
 ):
-    """Add effect size distribution."""
+    """
+    Add effect size distribution with heather styling.
+    """
     if 'cliffs_delta' not in stats_results.columns:
         return
     
     # Categorize effect sizes
     interpretations = stats_results['cliffs_delta_interpretation'].value_counts()
     
+    # Map interpretation to heather colors
+    effect_color_map = {
+        'negligible': '#C4B8D1',  # Pale heather
+        'small': '#A89CC4',       # Light purple
+        'medium': '#8B7BA4',      # Soft purple
+        'large': '#A85A5A'        # Soft red
+    }
+    
+    colors = [effect_color_map.get(str(idx).lower(), '#9A9A99') for idx in interpretations.index]
+    
     fig.add_trace(
         go.Bar(
             x=interpretations.index.tolist(),
             y=interpretations.values.tolist(),
-            marker_color=['gray', 'yellow', 'orange', 'red'],
+            marker=dict(
+                color=colors,
+                line=dict(color='#6B6B7A', width=1.5)
+            ),
             text=interpretations.values,
-            textposition='auto',
-            name='Effect Size Distribution'
+            textposition='outside',
+            name='Effect Size',
+            hovertemplate='<b>%{x}</b><br>Count: %{y}<extra></extra>'
         ),
         row=row, col=col
     )

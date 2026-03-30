@@ -22,9 +22,9 @@ import pandas as pd
 import anndata as ad
 
 # Local Imports: Configuration and Utilities
-from workflow_16s.config_schema import AppConfig
+from workflow_16s.config import AppConfig
 from workflow_16s.utils.logger import get_logger
-from workflow_16s.downstream.visualization import PlottingUtils
+from workflow_16s.visualization.utils import PlottingUtils
 
 # Import Modular Steps
 # These modules house the 700+ lines of logic previously in this file
@@ -82,7 +82,7 @@ class DownstreamWorkflow:
         self.plot_utils = PlottingUtils(self.logger)
         
         # Environment and Dependency Discovery
-        self.picrust2_conda_env = find_conda_env_by_substring("picrust2", self.logger)
+        self.picrust2_conda_env = find_conda_env_by_substring("picrust2", None)#self.logger)
         self.picrust2_enabled = self.picrust2_conda_env is not None
         
         # Database Initialization (Faprotax, NFC)
@@ -94,6 +94,7 @@ class DownstreamWorkflow:
         self.is_arkin_enabled = False
         self.is_nfc_enabled = True
         self.is_env_data_enabled = False
+        self.is_gee_enabled = False
         
         # Analysis Variables - will be populated during analysis
         self.priority_categorical: List[str] = []

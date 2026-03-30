@@ -1,6 +1,5 @@
-# ===================================== IMPORTS ====================================== #
+# workflow_16s/metadata/manager.py
 
-# Standard Imports
 import asyncio
 import json
 import logging
@@ -8,18 +7,15 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-# Third Party Imports
 import aiohttp
 import numpy as np
 import pandas as pd
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, process
 
-# Local Imports
-from workflow_16s.config_schema import AppConfig
+from workflow_16s.config import AppConfig
 from workflow_16s.constants import SAMPLE_ID_COLUMN
+from workflow_16s.utils.logger import get_logger, with_logger
 from workflow_16s.utils.progress import get_progress_bar
-
-# Import from new metadata modules
 from .constants import (
     DEFAULT_COLUMN_MAPPINGS, DEFAULT_CONVERSIONS, DEFAULT_COORDINATE_SOURCES,
     DEFAULT_MEASUREMENT_STANDARDS, DEFAULT_UNIT_PATTERNS, ONTOLOGY_MAP,
@@ -27,12 +23,14 @@ from .constants import (
 )
 from .enrichment import MetadataEnricher
 
-# ==================================================================================== #
+# Import ENA enrichment pipeline
+try:
+    from workflow_16s.api.sequence.ena import ENAEnrichmentPipeline
+    HAS_ENA_PIPELINE = True
+except ImportError:
+    HAS_ENA_PIPELINE = False
 
-logger = logging.getLogger("workflow_16s")
-
-# ==================================================================================== #
-
+@with_logger
 class MetadataManager:
     """A unified class to handle the cleaning, processing, and enrichment of metadata.
 
@@ -47,9 +45,7 @@ class MetadataManager:
     The primary entry point is the `run_pipeline()` method, which executes these
     steps in a logical order.
     """
-    # ================================= CLASS ATTRIBUTES ================================= #
 
-    # Bring in constants from the new module
     NUM_PATTERN = re.compile(r'[-+]?\d*\.\d+|[-+]?\d+') # Re-compile for self
     PH_PATTERN = PH_PATTERN
     DEFAULT_COORDINATE_SOURCES = DEFAULT_COORDINATE_SOURCES
@@ -58,42 +54,103 @@ class MetadataManager:
     DEFAULT_CONVERSIONS = DEFAULT_CONVERSIONS
     DEFAULT_MEASUREMENT_STANDARDS = DEFAULT_MEASUREMENT_STANDARDS
     ONTOLOGY_MAP = ONTOLOGY_MAP
+    
+    CORE_COLUMNS = ['run_accession', 'sample_accession', 'lat', 'lon', 'collection_date']
+    
+    TARGET_SCHEMA = {
+        "ph": ["ph", "ph_level", "soil_ph", "water_ph", "ph_sensor"],
+        "temperature": ["temp", "temperature_c", "temp_c", "water_temp", "soil_temp", "air_temp"],
+        "env_type": ["environment", "sample_type", "water_body", "biome"],
+        "salinity": ["sal", "salinity_ppt", "salinity_psu", "salt_concentration", "conductivity"],
+        "depth": ["depth", "depth_m", "sampling_depth", "water_depth", "altitude_m"],
+        "oxygen": ["do", "dissolved_oxygen", "o2_concentration", "oxygen_saturation"],
+        "host_age": ["age", "host_age", "subject_age", "age_years"],
+        "host_sex": ["sex", "gender", "host_sex"]
+    }
 
-    # ================================= INITIALIZATION ================================= #
 
     def __init__(
         self, metadata: pd.DataFrame, config: AppConfig,
         sample_id_column: str = SAMPLE_ID_COLUMN
     ):
-        if metadata.empty:
-            raise ValueError("Cannot process an empty metadata DataFrame.")
-
-        self.df = metadata.copy()
-        self.original_df_for_enrichment: Optional[pd.DataFrame] = None
+        if metadata.empty: raise ValueError("Cannot process an empty metadata DataFrame.")
+        
+        self.logger = get_logger("workflow_16s")
+        
         self.config = config
         self.sample_id_column = self.config.metadata.columns.sample_id or sample_id_column
+        self.ncbi_api_key = self.config.credentials.ncbi_api_key or None
+        self.df = metadata.copy()
         self.initial_shape = self.df.shape
+        self.original_df_for_enrichment: Optional[pd.DataFrame] = None
+        
         self.report: Dict[str, Any] = {
             'initial_shape': self.initial_shape, 'actions': [],
             'columns_dropped': {'unwanted': [], 'duplicate': [], 'merged': []},
             'numeric_coercions': {}, 'categorical_standardizations': {},
             'unit_standardizations': {}
         }
-        self.ncbi_api_key = self.config.credentials.ncbi_api_key or None
         
-        # Ontology maps are now loaded from constants, no _define_ontology_maps needed
-        logger.info(f"Initialized MetadataManager with shape {self.df.shape}.")
+        self.logger.info(f"Initialized MetadataManager with shape {self.df.shape}.")
+        
+    def harmonize(self, similarity_threshold: int = 85) -> pd.DataFrame:
+        """
+        Collapses sparse, chaotic ENA metadata into a dense standard schema.
+        Uses a mix of exact alias matching and fuzzy string distance.
+        """
+        self.logger.info(f"🧬 Harmonizing {len(self.df.columns)} raw columns into standard schema...")
+        
+        # Start with the core columns you already know are good
+        core_cols = self.CORE_COLUMNS
+        harmonized_df = self.df[self.df.columns.intersection(core_cols)].copy()
 
-    # ================================= MAIN EXECUTOR ================================== #
+        # Iterate through our desired standard fields
+        for standard_key, aliases in self.TARGET_SCHEMA.items():
+            found_data = pd.Series(index=self.df.index, dtype=object)
+            matched_raw_cols = []
+
+            for raw_col in self.df.columns:
+                raw_col_lower = raw_col.lower().strip()
+                
+                # 1. Exact Match in Synonym Ring
+                is_alias = raw_col_lower in aliases
+                
+                # 2. Fuzzy Match (Catches typos or variations)
+                fuzzy_score = fuzz.ratio(raw_col_lower, standard_key)
+                is_fuzzy = fuzzy_score >= similarity_threshold
+
+                if is_alias or is_fuzzy:
+                    # Combine existing found data with the new column (filling NaNs)
+                    found_data = found_data.combine_first(self.df[raw_col])
+                    matched_raw_cols.append(raw_col)
+
+            if not found_data.isna().all():
+                harmonized_df[standard_key] = found_data
+                self.logger.debug(f"✅ Harmonized '{standard_key}' from: {matched_raw_cols}")
+
+        for col in self.df.columns:
+            if col not in matched_raw_cols and col not in harmonized_df.columns:
+                if self.df[col].notna().mean() > 0.01:  # Keep columns that are at least 1% complete
+                    harmonized_df[col] = self.df[col]
+
+        self.logger.info(f"✅ Final harmonized metadata shape: {harmonized_df.shape}")
+        return harmonized_df
 
     async def run_pipeline(self) -> pd.DataFrame:
         """
         Executes the full cleaning, processing, and enrichment pipeline.
-        
+
+        Pipeline stages:
+        1. **Cleaning**: Standardizes formats, handles duplicates, converts types
+        2. **Processing**: Extracts geolocation, infers ontologies, standardizes dates
+        3. **Enrichment**:
+           - External API calls (geocoding, ENVO codes, publications)
+           - ENA/SRA metadata enrichment (location, collection dates from sequence archives)
+
         Returns:
             A fully cleaned, processed, and enriched metadata DataFrame.
         """
-        logger.info("[!] Starting metadata processing pipeline...")
+        self.logger.info("[!] Starting metadata processing pipeline...")
         self.df = self.df.reindex(sorted(self.df.columns), axis=1)
 
         # Core cleaning and standardization (Synchronous)
@@ -102,20 +159,18 @@ class MetadataManager:
         # Data extraction and ontology Inference (Synchronous)
         self._run_processing_steps()
         if self.df.empty:
-            logger.warning("DataFrame is empty after processing steps. Returning original DataFrame.")
+            self.logger.warning("DataFrame is empty after processing steps. Returning original DataFrame.")
             return self.df
 
         # 3. External Data Enrichment (Asynchronous)
         await self._run_enrichment_steps()
 
-        logger.info(f"[X] Metadata processing pipeline complete. Final shape: {self.df.shape}")
+        self.logger.info(f"[X] Metadata processing pipeline complete. Final shape: {self.df.shape}")
         return self.df.copy()
-
-    # ============================== PIPELINE STAGES =============================== #
 
     def _run_cleaning_steps(self) -> None:
         """Executes foundational cleaning tasks."""
-        logger.info("--- Running Stage 1: Cleaning and Standardization ---")
+        self.logger.info("--- Running Stage 1: Cleaning and Standardization ---")
         steps = [
             ("Dropping unwanted columns", self._drop_unwanted_columns),
             ("Removing duplicate columns", self._clean_duplicate_columns),
@@ -132,7 +187,7 @@ class MetadataManager:
 
     def _run_processing_steps(self) -> None:
         """Executes data extraction and inference tasks."""
-        logger.info("--- Running Stage 2: Processing and Inference ---")
+        self.logger.info("--- Running Stage 2: Processing and Inference ---")
         
         self.original_df_for_enrichment = self.df.copy()
         steps = [
@@ -147,19 +202,74 @@ class MetadataManager:
     async def _run_enrichment_steps(self) -> None:
         """
         Delegates tasks that enrich data using external sources to MetadataEnricher.
+        Also enriches ENA metadata (sample accessions with location/date information).
         """
-        logger.info("--- Running Stage 3: Enrichment (Async) ---")
+        self.logger.info("--- Running Stage 3: Enrichment (Async) ---")
         async with aiohttp.ClientSession() as session:
             # Instantiate the enricher and pass it the session and API key
             enricher = MetadataEnricher(
-                session=session, 
+                session=session,
                 ncbi_api_key=self.ncbi_api_key
             )
-            
+
             # Delegate the enrichment tasks, passing the DataFrame
             await enricher.enrich_location_from_coords(self.df)
             await enricher.convert_envo_codes(self.df)
             await enricher.find_publications(self.df)
+
+        # Add ENA metadata enrichment (location, dates from ENA/SRA)
+        await self._run_ena_enrichment()
+
+    async def _run_ena_enrichment(self) -> None:
+        """
+        Enrich samples with ENA/SRA metadata (location, collection dates).
+
+        This step:
+        1. Checks if ENA enrichment is enabled in config
+        2. Verifies email credential is available
+        3. Enriches samples with location and date information
+        4. Gracefully handles errors and missing data
+        """
+        # Check if ENA enrichment is enabled
+        if not self.config.apis.enabled or not self.config.apis.sequence.ena.enabled:
+            self.logger.debug("ENA enrichment disabled in config")
+            return
+
+        # Check if we have email configured
+        ena_email = self.config.credentials.ena_email or self.config.credentials.email
+        if not ena_email:
+            self.logger.warning(
+                "ENA enrichment requires ena_email or email credential. Skipping ENA enrichment."
+            )
+            return
+
+        try:
+            from workflow_16s.api.sequence.ena import ENAEnrichmentPipeline
+
+            self.logger.info("Starting ENA metadata enrichment...")
+
+            async with ENAEnrichmentPipeline(self.config) as pipeline:
+                enriched_df = await pipeline.enrich_samples(self.df)
+
+                # Merge enriched columns with existing DataFrame
+                # Only add new columns or fill missing values
+                for col in enriched_df.columns:
+                    if col not in ['run_accession', 'sample_accession', '#sampleid', 'sample_id']:
+                        # Only add column if it doesn't exist or if we're filling missing values
+                        if col not in self.df.columns:
+                            self.df[col] = enriched_df[col]
+                        else:
+                            # Fill missing values in existing column from enriched data
+                            mask = self.df[col].isna()
+                            if mask.any():
+                                self.df.loc[mask, col] = enriched_df.loc[mask, col]
+
+            self.logger.info("✅ ENA enrichment completed successfully")
+
+        except ImportError as e:
+            self.logger.warning(f"ENA enrichment module not available: {e}")
+        except Exception as e:
+            self.logger.warning(f"ENA enrichment encountered an error (continuing pipeline): {e}", exc_info=True)
 
     def _execute_steps(self, steps: List[Tuple[str, Callable]]) -> None:
         """Generic step executor to run a list of synchronous functions."""
@@ -168,10 +278,8 @@ class MetadataManager:
                 func()
                 self.report['actions'].append(name)
             except Exception as e:
-                logger.error(f"Error during '{name}': {e}", exc_info=True)
+                self.logger.error(f"Error during '{name}': {e}", exc_info=True)
                 raise
-
-    # =========================== I/O STATIC METHODS ============================= #
 
     @staticmethod
     def import_tsv(metadata_path: Union[str, Path]) -> pd.DataFrame:
@@ -184,7 +292,7 @@ class MetadataManager:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         metadata.to_csv(output_path, sep='\t', index=False)
-        logger.info(f"Metadata successfully exported to {output_path}")
+        get_logger("workflow_16s").info(f"Metadata successfully exported to {output_path}")
 
     @staticmethod
     def import_merged_metadata(metadata_paths: List[Union[str, Path]]) -> pd.DataFrame:
@@ -198,15 +306,12 @@ class MetadataManager:
                     df.columns = df.columns.str.lower().str.strip()
                     dfs.append(df)
                 except Exception as e:
-                    logger.error(f"Failed to load metadata file {path}: {e!r}")
+                    self.logger.error(f"Failed to load metadata file {path}: {e!r}")
                 finally: progress.update(task, advance=1)
 
         if not dfs:
             raise FileNotFoundError("No valid metadata files could be loaded.")
         return pd.concat(dfs, ignore_index=True)
-
-    # ========================== CLEANING & STANDARDIZATION ========================== #
-    # (All synchronous cleaning/processing methods remain here)
 
     def _drop_unwanted_columns(self) -> None:
         cols_to_drop = self.config.metadata.columns_to_drop or []
@@ -214,14 +319,14 @@ class MetadataManager:
         if existing_cols_to_drop:
             self.df.drop(columns=existing_cols_to_drop, inplace=True)
             self.report['columns_dropped']['unwanted'] = existing_cols_to_drop
-            logger.info(f"Dropped {len(existing_cols_to_drop)} unwanted columns.")
+            self.logger.info(f"Dropped {len(existing_cols_to_drop)} unwanted columns.")
 
     def _clean_duplicate_columns(self) -> None:
         if self.df.columns.duplicated().any():
             duplicated_cols = self.df.columns[self.df.columns.duplicated()].unique().tolist()
             self.df = self.df.loc[:, ~self.df.columns.duplicated()]
             self.report['columns_dropped']['duplicate'] = duplicated_cols
-            logger.warning(f"Removed duplicate columns: {duplicated_cols}")
+            self.logger.warning(f"Removed duplicate columns: {duplicated_cols}")
 
     def _clean_sample_ids(self) -> None:
         if self.sample_id_column not in self.df.columns:
@@ -231,7 +336,7 @@ class MetadataManager:
                 alt for alt in alternatives if alt in self.df.columns
             ), None)
             if found_col:
-                logger.warning(f"'{self.sample_id_column}' not found. Creating it from '{found_col}'.")
+                self.logger.warning(f"'{self.sample_id_column}' not found. Creating it from '{found_col}'.")
                 self.df[self.sample_id_column] = self.df[found_col]
             else:
                 raise KeyError(f"Required sample ID column '{self.sample_id_column}' not found.")
@@ -246,7 +351,7 @@ class MetadataManager:
         removed_count = original_count - len(self.df)
         if removed_count > 0:
             self.report['duplicate_rows_removed'] = removed_count
-            logger.warning(f"Removed {removed_count} rows with duplicate or missing sample IDs.")
+            self.logger.warning(f"Removed {removed_count} rows with duplicate or missing sample IDs.")
 
     def _clean_numeric_columns(self) -> None:
         numeric_cols = self.config.metadata.force_numeric_columns or []
@@ -257,7 +362,7 @@ class MetadataManager:
                 coerced_count = self.df[col].isna().sum() - initial_nans
                 if coerced_count > 0:
                     self.report['numeric_coercions'][col] = coerced_count
-                    logger.debug(f"Coerced {coerced_count} values to NaN in '{col}'.")
+                    self.logger.debug(f"Coerced {coerced_count} values to NaN in '{col}'.")
 
     def _standardize_categorical_values(self) -> None:
         mappings = self.config.metadata.mappings or {}
@@ -268,7 +373,7 @@ class MetadataManager:
                 if not cleaned_series.equals(replaced_series):
                     self.df[col] = replaced_series
                     self.report['categorical_standardizations'][col] = value_map
-                    logger.debug(f"Standardized values in column '{col}'.")
+                    self.logger.debug(f"Standardized values in column '{col}'.")
 
     def _apply_custom_filters(self) -> None:
         if 'empo_3' in self.df.columns:
@@ -278,7 +383,7 @@ class MetadataManager:
             self.df = self.df[~mask]
             rows_removed = initial_rows - len(self.df)
             if rows_removed > 0:
-                logger.info(f"Filtered {rows_removed} rows based on 'empo_3' values.")
+                self.logger.info(f"Filtered {rows_removed} rows based on 'empo_3' values.")
                 self.report['custom_filters_applied'] = {
                     'column': 'empo_3', 'rows_removed': rows_removed
                 }
@@ -295,8 +400,10 @@ class MetadataManager:
         for col in self.df.columns:
             base_name_raw, unit = self._parse_column_unit(col)
             if base_name_raw and unit:
-                measurement_key = next((key for key in self.DEFAULT_MEASUREMENT_STANDARDS
-                                      if key in base_name_raw), base_name_raw)
+                measurement_key = next((
+                    key for key in self.DEFAULT_MEASUREMENT_STANDARDS
+                    if key in base_name_raw
+                ), base_name_raw)
                 column_groups.setdefault(measurement_key, []).append((col, unit))
 
         for base_name, cols_with_units in column_groups.items():
@@ -306,7 +413,7 @@ class MetadataManager:
             if not target_unit: continue
             
             target_col_name = f"{base_name}_{target_unit}"
-            logger.info(f"Merging {[c[0] for c in cols_with_units]} into '{target_col_name}'")
+            self.logger.info(f"Merging {[c[0] for c in cols_with_units]} into '{target_col_name}'")
             
             merged_series = pd.Series(np.nan, index=self.df.index, dtype=float)
             for col_name, unit in cols_with_units:
@@ -317,7 +424,7 @@ class MetadataManager:
                     conversion_func = self.DEFAULT_CONVERSIONS[unit][1]
                     converted_series = conversion_func(source_series)
                 else:
-                    logger.warning(f"Cannot convert '{unit}' to '{target_unit}' for '{col_name}'. Skipping.")
+                    self.logger.warning(f"Cannot convert '{unit}' to '{target_unit}' for '{col_name}'. Skipping.")
                     continue
                 merged_series.update(converted_series)
 
@@ -397,7 +504,6 @@ class MetadataManager:
         
         missing_mask = lat.isna() | lon.isna()
         if missing_mask.any():
-            # --- FIX: Explicitly include 'location' in the search sources ---
             # --- Identify columns to parse for text coordinates ---
             pair_sources = [
                 c for c in self.DEFAULT_COORDINATE_SOURCES['pairs'] if c in self.df.columns
@@ -411,8 +517,7 @@ class MetadataManager:
             if 'lat' in self.df.columns and lat.isna().all():
                 if 'lat' not in pair_sources:
                     pair_sources.append('lat')
-            # ------------------------------------------------------
-            # ------------------------------------------------------------
+                    
             for source in pair_sources:
                 if not missing_mask.any(): break
                 to_process = self.df.loc[missing_mask, source].dropna()
@@ -430,7 +535,7 @@ class MetadataManager:
         valid_mask = (self.df['lat'].between(-90, 90)) & (self.df['lon'].between(-180, 180))
         self.df = self.df[valid_mask].reset_index(drop=True)
         dropped_count = initial_count - len(self.df)
-        logger.info(f"Geolocation: {initial_count} initial -> {len(self.df)}"
+        self.logger.info(f"Geolocation: {initial_count} initial -> {len(self.df)}"
                     f" valid. ({dropped_count} dropped).")
 
     def _extract_coords_from_string(
@@ -439,11 +544,6 @@ class MetadataManager:
         if not isinstance(s, str): return None, None
         
         # 1. Robust "Decimal Direction" pattern with Scientific Notation support
-        # Matches: Number(float/sci) Space N/S Space Number(float/sci) Space E/W
-        # Example: "3.0E-4 N 153.6759 W"
-        # Regex explanation:
-        #   [\d\.-]+           -> Match numbers, dots, negative signs
-        #   (?:[eE][-+]?\d+)?  -> Optionally match scientific notation (e.g., E-4)
         dd_dir_regex = r'([\d\.-]+(?:[eE][-+]?\d+)?)\s*([NS])\s*([\d\.-]+(?:[eE][-+]?\d+)?)\s*([EW])'
         
         match = re.search(dd_dir_regex, s, re.IGNORECASE)
@@ -503,7 +603,7 @@ class MetadataManager:
                 self.df[term_category] = search_text_series.apply(
                     self._infer_ontology_term, term_map=term_map
                 )
-                logger.debug(f"Inferred ontology for '{term_category}'.")
+                self.logger.debug(f"Inferred ontology for '{term_category}'.")
 
     def _process_contamination_status(self) -> None:
         if 'nuclear_contamination_status' in self.df.columns:
@@ -518,13 +618,11 @@ class MetadataManager:
             if col not in self.df.columns: self.df[col] = 'N/A'
             else: self.df[col].fillna('N/A', inplace=True)
 
-    # ========================== EXPLORATORY & REPORTING =========================== #
-
     def suggest_categorical_mappings(
         self, similarity_threshold: int = 90, max_unique_values: int = 100
     ) -> Dict[str, Dict[str, str]]:
         """Analyzes categorical columns and suggests mappings for standardization."""
-        logger.info("Generating suggestions for categorical value mappings...")
+        self.logger.info("Generating suggestions for categorical value mappings...")
         suggested_mappings = {}
         categorical_cols = self.df.select_dtypes(include=['object', 'category']).columns
         with get_progress_bar() as progress:
@@ -558,7 +656,7 @@ class MetadataManager:
                     
                     if col_mapping: suggested_mappings[col] = col_mapping
                 except Exception as e:
-                    logger.error(f"Error analyzing column '{col}': {e}", exc_info=True)
+                    self.logger.error(f"Error analyzing column '{col}': {e}", exc_info=True)
                 finally: progress.update(task, advance=1)
                 
         return suggested_mappings
@@ -577,8 +675,8 @@ class MetadataManager:
         }
         return self.report
 
-# ================================== EXECUTOR FUNCTION ==================================== #
 
+@with_logger
 async def process_metadata(
     df: pd.DataFrame, output_path: Union[str, Path], config: Optional[AppConfig] = None
 ) -> pd.DataFrame:
@@ -592,28 +690,20 @@ async def process_metadata(
         if not cleaned_df.empty:
             MetadataManager.export_tsv(cleaned_df, output_path)
         else:
-            logger.warning("Pipeline resulted in an empty DataFrame. No file was saved.")
+            manager.logger.warning("Pipeline resulted in an empty DataFrame. No file was saved.")
             return df
 
-        # --- NEW REPORTING LOGIC ---
         report = manager.get_cleaning_report()
-        
-        # Define the path for the report file
         output_path = Path(output_path)
         report_path = output_path.parent / f"{output_path.stem}_cleaning_report.json"
-        
-        # Save the report to a JSON file
         with open(report_path, 'w') as f:
             json.dump(report, f, indent=2, default=str)
             
-        # Log a single, clean message pointing to the report
-        logger.info(f"Metadata cleaning complete. A detailed report was saved to: {report_path}")
-        # --- END NEW LOGIC ---
-        
+        manager.logger.info(f"Metadata cleaning complete. A detailed report was saved to: {report_path}")
         return cleaned_df
     
     except Exception as e:
-        logger.error(
+        manager.logger.error(
             f"An error occurred during the metadata processing workflow: {e}", exc_info=True
         )
         return df # Return original dataframe on failure

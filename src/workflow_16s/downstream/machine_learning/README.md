@@ -1,136 +1,103 @@
-Here is a comprehensive `README.md` for the **Machine Learning Module**. You can place this file in `src/workflow_16s/downstream/machine_learning/README.md`.
-
 ---
 
-# Machine Learning & Feature Selection Module
+# 🧬 16S Machine Learning Discovery & Forensic Suite
 
 ## 🧠 Overview
 
-This module provides a robust, production-ready Machine Learning pipeline designed specifically for high-dimensional microbiome data. It integrates **CatBoost** and **Random Forest** to identify microbial signatures that predict metadata targets (e.g., "Facility Match", "pH", "Treatment Group").
+This module provides a high-integrity, production-ready Machine Learning pipeline designed specifically for identifying robust microbial biomarkers in 16S data. Unlike standard pipelines that optimize for raw accuracy, this suite optimizes for **Scientific Generalizability**—ensuring discovered taxa are biological signals rather than technical artifacts.
 
-**Key Capabilities:**
+### The "Forensic Grade" Difference:
 
-* **Dual-Engine Support:** Runs Gradient Boosting (CatBoost) and Bagging (Random Forest) in parallel.
-* **Batch Effect Management:** Implements 4 distinct strategies to handle technical noise (e.g., Sequencing Center, Run ID).
-* **Strict Targeting:** Focuses computational power only on validated, relevant metadata columns.
-* **SHAP-Based Feature Selection:** Reduces tens of thousands of ASVs/Genera to a stable core signature.
+* **Study-Agnostic Discovery:** Prioritizes microbes that persist across independent labs and sequencing centers.
+* **Consensus Weighting:** Adjusts feature importance based on cross-study appearance frequency.
+* **Defense-in-Depth Validation:** Every discovery must pass a 4-tier audit (Eligibility, Overfitting, Significance, and Stability).
+* **Certification Dashboard:** Automatically generates a PASS/FAIL "Executive Summary" for stakeholders.
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ The 4-Tier Validation Stack
 
-The pipeline operates in two phases: **Feature Selection (FS)** and **Model Evaluation**.
+The pipeline implements a hierarchical audit trail to ensure every reported biomarker is mathematically and biologically defensible.
 
-### 1. Feature Selection (FS)
+| Tier | Module | Goal | Logic |
+| --- | --- | --- | --- |
+| **1. Eligibility** | `StudyEligibilityManager` | **Pre-flight Audit** | Prunes studies with  or zero target variance to prevent injecting noise. |
+| **2. Internal Audit** | `run_comprehensive_validation` | **Overfitting Guardrail** | Uses Nested CV to measure the "Gap" between training and validation scores. |
+| **3. Significance** | `run_shuffle_baseline` | **Chance Elimination** | Calculates an empirical -value by comparing results to 100+ random permutations. |
+| **4. Consensus** | `perform_meta_analysis` | **Universal Mapping** | Identifies "Golden Biomarkers" that appear as top predictors in  of independent studies. |
 
-Before training complex models, the pipeline uses **CatBoost with SHAP values** to identify the top predictive features.
+---
 
-* **Input:** CLR-transformed counts (e.g., Genus level).
-* **Process:** Trains a quick model, calculates SHAP importance for every feature, and keeps the top  (default: 20-50).
-* **Output:** A reduced feature set used for the final models.
+## 🚀 Discovery Workflow
 
-### 2. Batch Control Strategies
+The discovery process is orchestrated by `workflows/feature_selection.py`:
 
-Microbiome data is notoriously sensitive to batch effects. This module allows you to run up to 4 concurrent strategies to assess model robustness:
-
-| Strategy | Description | Best For |
-| --- | --- | --- |
-| **Baseline** | Standard ML. Ignores batch information. | Initial scouting. |
-| **Agnostic** | **"The Control".** Removes batch columns from training data entirely. | Verifying signal isn't just batch ID. |
-| **Batch-Adjusted** | Includes Batch ID as a covariate (One-Hot Encoded) in the model. | allowing the model to "learn" the noise. |
-| **Group-Validated** | **"The Gold Standard".** Uses `GroupKFold` cross-validation, ensuring samples from the same batch never appear in both train and test sets. | Testing true generalizability. |
+1. **Sanitization**: Applies **Batch-Centered CLR** (Z-Centering) to remove constant technical offsets between sequencing facilities.
+2. **Agnostic Search**: Trains a model blinded to "Batch IDs" to ensure it learns microbial rules, not lab metadata.
+3. **Cross-Validation (LOPOCV)**: Implements "Leave-One-Project-Out" CV—the ultimate test of a model's ability to predict a target in a brand-new, unseen facility.
+4. **Robustness Weighting**: Final SHAP importance scores are weighted by **Meta-Analysis Frequency**, surfacing biomarkers that are both powerful and consistent.
 
 ---
 
 ## ⚙️ Configuration
 
-Configure the module in `config/config_ml_only.yaml`.
+Control the discovery engine in `config/config_ml_only.yaml`.
 
 ```yaml
 ml:
   enabled: true
-  strict_targets: true   # If true, only analyzes specific columns
-  targets:               # The specific columns to predict
-    - "facility_match"
-    - "facility_distance_km"
-  
-  # Grid Settings (Loop through these combinations)
-  grid_settings:
-    levels: ["Genus", "Family"]  # Taxonomic levels
-    transformations: ["clr"]     # Normalization (clr, binary, log1p)
-    fs_strategies:               # Which batch strategies to run during Feature Selection
-      - "baseline"
-      - "group_validated"
-
-  # Model Hyperparameters
-  models:
-    enable_catboost: true
-    enable_random_forest: true
-    n_estimators: 200
-    max_depth: 10        # Keep <= 10 for CatBoost on CPU
+  eligibility_mode: "filter"   # Prune underpowered studies before training
+  targets: 
+    - "facility_match"         # Forensic Target
+    - "ph_h2o"                 # Ecological Baseline
     
-  # Batch Correction Settings
-  batch_covariates:
-    enabled: true
-    covariate_columns: ["sequencing_center", "run_id"]
-    covariate_adjustment:
-      one_hot_encode: true
+  grid_settings:
+    levels: ["Genus"]
+    fs_strategies: 
+      - "agnostic"             # Blinded to Batch ID
+      - "lopocv"               # Leave-One-Project-Out (The Gold Standard)
+      - "meta_analysis"        # Cross-study consensus
 
 ```
 
 ---
 
-## 🚀 Usage
+## 📂 Architecture & Artifacts
 
-This module is typically invoked automatically by the main analysis pipeline (`steps/analysis.py`), but it is modular enough to be understood in isolation.
-
-### The Workflow Loop
-
-1. **Data Prep:** `analysis.py` aggregates data (e.g., to Genus) and applies CLR transform.
-2. **Selection:** `run_catboost_selection` finds the top features.
-3. **Training:** `run_machine_learning_analysis` trains full models using the selected features and the requested batch strategies.
-4. **Visualization:** Generates performance reports and SHAP plots.
-
-### Output Directory Structure
-
-Results are saved in `outputs/ml_plots/`:
+### Directory Structure
 
 ```text
-outputs/ml_plots/
-├── Genus/
-│   ├── clr/
-│   │   ├── facility_match/         # Target Name
-│   │   │   ├── catboost_baseline/  # Strategy + Algorithm
-│   │   │   │   ├── shap_beeswarm.png
-│   │   │   │   ├── confusion_matrix.png
-│   │   │   │   └── performance_metrics.csv
-│   │   │   ├── rf_group_validated/
-│   │   │   └── ...
+outputs/machine_learning/
+├── Discovery_Executive_Summary.html    <-- The Certification Dashboard
+├── agnostic/
+│   └── Genus_facility_match/
+│       ├── discovery_audit_plot.html   <-- 4-Panel diagnostic report
+│       ├── batch_dependency_donut.html <-- Tech vs. Bio signal ratio
+│       └── robustness_weighted_features.csv
+├── meta_analysis/
+│   └── Genus_facility_match/
+│       └── biomarker_stability_heatmap.html
+├── environmental_baseline/              <-- SoilGrids baseline suite
+└── ...
 
 ```
 
+### Module Descriptions
+
+* **`workflows/feature_selection.py`**: The Orchestrator. Manages the loop from data prep to final certification.
+* **`validation/`**: The Auditor. Houses the eligibility guards, shuffle tests, and quality certification gates.
+* **`meta_analysis.py`**: The Consensus Engine. Compares features across independent studies to identify universal biomarkers.
+* **`visualization/`**: The Storyteller. Generates the diagnostic audits, stability heatmaps, and batch-dependency plots.
+
 ---
 
-## 📂 File Descriptions
+## 🛡️ Forensic Integrity Checks
 
-* **`main.py`**
-* **The Orchestrator.** Contains `run_machine_learning_analysis` and `run_catboost_selection`.
-* Handles data preparation, target validation, and looping through strategies.
+A discovery is considered **"Certified"** only if:
 
+1. **Biological Signal**: MCC Score  (Agnostic).
+2. **Statistical Significance**: Permutation -value .
+3. **Generalization**: Overfitting Gap .
+4. **Consistency**: At least 3 biomarkers verified across independent cohorts.
 
-* **`feature_selection.py`**
-* **The Filter.** Runs a lightweight CatBoost regressor/classifier to calculate SHAP values.
-* Returns a sorted list of the most important taxa.
-
-
-* **`batch_control.py`**
-* **The Engine.** Contains `run_ml_with_batch_control`.
-* Manages the cross-validation logic (StratifiedKFold vs GroupKFold) and covariate injection.
-* Handles the actual training of CatBoost and sklearn Random Forest models.
-
-
-* **`visualization.py`**
-* **The Artist.** Generates publication-ready plots:
-* **SHAP Beeswarm:** Direction and magnitude of feature impact.
-* **Correlation Matrix:** How features relate to each other.
-* **Performance Bar Charts:** Compare Accuracy/R2 across batch strategies.
+---

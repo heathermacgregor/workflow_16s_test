@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Configuration Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background: #0f172a; color: #f8fafc; padding: 2rem; font-family: 'Inter', sans-serif;}
+        pre { background: #1e293b; padding: 1.5rem; border-radius: 0.5rem; font-family: 'Fira Code', monospace; font-size: 13px; color: #38bdf8; overflow-x: auto;}
+    </style>
+</head>
+<body>
+    <div class="max-w-4xl mx-auto">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-2xl font-bold"><i class="fa-solid fa-sliders mr-3"></i>Active Configuration</h1>
+            <button onclick="copyConfig()" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded font-bold text-sm">Copy to Clipboard</button>
+        </div>
+        <pre id="yaml-content">Loading...</pre>
+    </div>
+
+    <script>
+        async function loadConfig() {
+            const res = await fetch('/api/get_config');
+            const data = await res.json();
+            document.getElementById('yaml-content').innerText = data.yaml || "Config file not found.";
+        }
+        function copyConfig() {
+            navigator.clipboard.writeText(document.getElementById('yaml-content').innerText);
+            alert("Copied to clipboard!");
+        }
+        loadConfig();
+    </script>
+</body>
+</html>

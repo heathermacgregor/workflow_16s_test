@@ -3,57 +3,23 @@ Analysis Helper Utilities for the 16S Workflow.
 Contains static methods for data transformation (CLR), aggregation,
 metadata parsing, and plottable column finding.
 """
-
 import re
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
+
+import anndata as ad
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import anndata as ad
+import scanpy as sc
+import seaborn as sns
+
 from scipy import sparse
 from scipy.sparse import csc_matrix, csr_matrix, issparse
-from typing import Dict, List, Tuple, Optional, Union, Any
-from collections import defaultdict
+
+from workflow_16s.config import AppConfig
 from workflow_16s.utils.logger import get_logger
-import scanpy as sc
-from pathlib import Path
-import seaborn as sns
-import matplotlib.pyplot as plt
-from workflow_16s.config_schema import AppConfig
-
-logger = get_logger("workflow_16s")
-
-def get_cfg_value(cfg_obj, key, default=None):
-    """Helper to safely get config values from dict or object."""
-    if isinstance(cfg_obj, dict): return cfg_obj.get(key, default)
-    return getattr(cfg_obj, key, default)
-
-def qc_metrics(adata: ad.AnnData, output_dir: Union[str, Path]) -> None:
-    """Calculates and plots basic QC metrics."""
-    if adata is None or adata.n_obs == 0: return
-    logger.info("Calculating QC metrics...")
-    sc.pp.calculate_qc_metrics(adata, percent_top=None, log1p=False, inplace=True)
-    
-    plot_path = Path(output_dir) / "qc_metrics.png"
-    try:
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-        sns.histplot(data=adata.obs, x='total_counts', ax=axes[0], bins=30)
-        sns.histplot(data=adata.obs, x='n_genes_by_counts', ax=axes[1], bins=30)
-        plt.tight_layout()
-        plt.savefig(plot_path)
-        plt.close(fig)
-        logger.info(f"Saved QC plot: {plot_path}")
-    except Exception: pass
-
-def export_fasta(adata: ad.AnnData, config: Union[AppConfig, dict], output_dir: Union[str, Path]) -> None:
-    """Exports sequences to FASTA."""
-    if 'sequence' not in adata.var.columns: return
-    fasta_path = Path(output_dir) / "all_features.fasta"
-    try:
-        with open(fasta_path, "w") as f:
-            for feat_id, seq in adata.var['sequence'].dropna().items():
-                f.write(f">{feat_id}\n{seq}\n")
-        logger.info(f"FASTA exported to {fasta_path}")
-    except Exception as e: logger.error(f"FASTA export failed: {e}")
-
 
 
 class AnalysisUtils:
@@ -61,18 +27,20 @@ class AnalysisUtils:
     
     # Columns to exclude from analysis/plotting automatically
     ADMIN_NOISE_COLUMNS = {
-        'biosample_insdc_center_name', 'biosample_Insdc_first_public', 'biosample_investigation_type', 
-        'country_facility', 'dataset', 'EnvironmentalHealth_date', 'latitude_osm', 'longitude_osm', 
-        'refs', 'source_url', 'source_version', 'temporal_coverage', 'time', 'unit', 'variable', 
-        'admin', 'batch', 'batch_original', 'sample_id', '#sampleid'
+        'biosample_insdc_center_name', 'biosample_Insdc_first_public', 
+        'biosample_investigation_type', 'country_facility', 'dataset', 
+        'EnvironmentalHealth_date', 'latitude_osm', 'longitude_osm', 
+        'refs', 'source_url', 'source_version', 'temporal_coverage', 
+        'time', 'unit', 'variable', 'admin', 'batch', 'batch_original', 
+        'sample_id', '#sampleid'
     }
     
     ADMIN_NOISE_PATTERNS = [re.compile(r'.*_insdc_status$')]
     
     # Priority columns that should always be included regardless of fullness threshold
     PRIORITY_COLUMNS = {
-        'facility_match', 'facility_distance_km', 'facility_name', 'facility_type', 
-        'latitude', 'longitude', 'lat', 'lon'
+        'facility_match', 'facility_distance_km', 'facility_name', 
+        'facility_type', 'latitude', 'longitude', 'lat', 'lon'
     }
     
     TAX_LEVELS_ALL = ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']
@@ -112,6 +80,19 @@ class AnalysisUtils:
         - If level is taxonomic, calls aggregate_adata_by_taxonomy.
         - If level is functional (in .obsm), creates a new AnnData object.
         """
+        logger = get_logger("workflow_16s")
+        
+        # ASV/OTU
+        if level.upper() in ['ASV', 'FEATURE', 'OTU']:
+            logger.info("Getting analysis AnnData for native ASV level")
+            adata_asv = adata_in.copy()
+            if 'raw_counts' not in adata_asv.layers:
+                adata_asv.layers['raw_counts'] = adata_asv.X.copy()
+                
+            adata_asv.var.index.name = 'ASV'
+            return adata_asv
+
+        # First check if level is a known taxonomic rank, then check .obsm for functional data
         if level in AnalysisUtils.TAX_LEVELS_ALL: 
             logger.info(f"Getting analysis AnnData for taxonomic level: {level}")
             return AnalysisUtils.aggregate_adata_by_taxonomy(adata_in, tax_level=level)
@@ -123,38 +104,40 @@ class AnalysisUtils:
                 if func_data is None: 
                     logger.error(f"Data for {level} in .obsm is None")
                     return None
-
-                # This will hold the (samples x features) data
                 data_for_anndata: Union[pd.DataFrame, csc_matrix, csr_matrix, np.ndarray]
-
+                
+                # Assume data is an array if not a DataFrame, and try to convert it
                 if not isinstance(func_data, pd.DataFrame):
-                    # --- BRANCH 1: Data is an array ---
-                    # Assumed (features x samples) or (samples x features)
-                    # We need to guess based on shape
                     logger.debug(f"Converting array data from .obsm['{level}']")
                     
                     if f"{level}_ids" in adata_in.uns: 
                         feature_names = adata_in.uns[f"{level}_ids"]
                     elif hasattr(func_data, 'shape') and func_data.shape is not None and func_data.shape[0] > 0: 
-                        # Fallback feature naming
                         # If shape[1] matches n_obs, likely (features x samples)
                         if func_data.shape[1] == adata_in.n_obs:
-                             feature_names = [f"{level}_{i}" for i in range(func_data.shape[0])]
+                            feature_names = [f"{level}_{i}" for i in range(func_data.shape[0])]
                         else:
-                             feature_names = [f"{level}_{i}" for i in range(func_data.shape[1])]
+                            feature_names = [f"{level}_{i}" for i in range(func_data.shape[1])]
                     else: 
                         logger.error(f"Cannot determine feature names for {level}")
                         return None
                     
-                    # Determine Orientation
+                    # Determine orientation and transpose if necessary, ensuring we end up with (samples x features)
                     if hasattr(func_data, 'shape') and func_data.shape is not None:
                         if func_data.shape[1] == adata_in.n_obs:
-                             # (Features x Samples) -> Need Transpose
-                             func_df = pd.DataFrame(func_data, index=feature_names, columns=adata_in.obs_names)
-                             data_for_anndata = func_df.T
+                            # Convert sparse matrix to dense array if needed
+                            if issparse(func_data):
+                                func_data_dense = func_data.toarray() # type: ignore
+                            else:
+                                func_data_dense = np.asarray(func_data)
+                            func_df = pd.DataFrame(func_data_dense, index=feature_names, columns=adata_in.obs_names)
+                            data_for_anndata = func_df.T
                         elif func_data.shape[0] == adata_in.n_obs:
-                             # (Samples x Features) -> Correct
-                             data_for_anndata = func_data
+                            # Convert scipy sparse arrays to matrices for compatibility
+                            if hasattr(func_data, 'toarray'):
+                                data_for_anndata = func_data if issparse(func_data) else np.asarray(func_data) # type: ignore
+                            else:
+                                data_for_anndata = np.asarray(func_data)
                         else:
                             logger.error(f"Shape mismatch for {level}: {func_data.shape} vs adata.n_obs {adata_in.n_obs}")
                             return None
@@ -162,34 +145,32 @@ class AnalysisUtils:
                         return None
                 
                 else:
-                    # --- BRANCH 2: Data is a DataFrame ---
                     logger.debug(f"Using existing DataFrame from .obsm['{level}'].")
                     func_df = func_data.copy()
                     
-                    # Validation check: Orientation
+                    # Check orientation: if rows don't match n_obs, try transposing
                     if func_df.shape[0] != adata_in.n_obs:
-                        logger.warning(f"DataFrame in .obsm['{level}'] has {func_df.shape[0]} rows, but adata has {adata_in.n_obs} obs.")
-                        logger.warning(f"Attempting to transpose, assuming (features x samples).")
-                        
+                        logger.warning(
+                            f"DataFrame in .obsm['{level}'] has {func_df.shape[0]} rows, but adata has {adata_in.n_obs} obs.\n"
+                            f"Attempting to transpose, assuming (features x samples)."
+                        )
                         if func_df.shape[1] != adata_in.n_obs:
                             logger.error(f"Shape mismatch: DataFrame is {func_df.shape}, adata is {adata_in.n_obs} obs. Cannot orient.")
                             return None
-                        # Use the transposed data
                         data_for_anndata = func_df.T
                     else:
-                        # Shape matches (samples x features), use as-is
                         data_for_anndata = func_df
 
-                # Create new AnnData object (now using data_for_anndata)
+                # Create new AnnData object 
                 adata_func = ad.AnnData(data_for_anndata)
                 adata_func.obs = adata_in.obs.loc[adata_func.obs_names].copy()
                 adata_func.var.index.name = level
                 
-                # IMPORTANT: Create the 'raw_counts' layer for downstream functions
+                # Create the 'raw_counts' layer for downstream functions
                 if isinstance(data_for_anndata, pd.DataFrame):
                     counts_values = data_for_anndata.values
                 elif issparse(data_for_anndata):
-                    counts_values = data_for_anndata.toarray()
+                    counts_values = data_for_anndata.toarray() # type: ignore
                 else:
                     counts_values = np.asarray(data_for_anndata)
 
@@ -215,61 +196,60 @@ class AnalysisUtils:
         
     @staticmethod
     def aggregate_adata_by_taxonomy(adata_in: ad.AnnData, tax_level: str = 'Genus') -> Union[ad.AnnData, None]:
-        """Aggregates an AnnData object using efficient sparse matrix multiplication."""
+        """
+        Aggregates an AnnData object using efficient sparse matrix multiplication.
+        Includes critical fixes for duplicates, whitespaces, and unassigned taxa.
+        """
+        logger = get_logger("workflow_16s")
         logger.info(f"--- Aggregating AnnData by {tax_level} ---")
+        
+        if not adata_in.obs_names.is_unique:
+            logger.warning("⚠️ Duplicate sample IDs found in input! Making unique (appending -1, -2)...")
+            adata_in.obs_names_make_unique()
+
         adata_copy = adata_in.copy()
         
         if tax_level not in adata_copy.var.columns: 
             logger.error(f"Tax level '{tax_level}' not in .var.")
             return None
             
-        # ==================================================================
-        # 1. ROBUST STANDARDIZATION (The Fix)
-        # ==================================================================
-        # Force conversion to string to handle Categoricals AND Objects identically.
-        # This fixes the " g__X" (leading space) issue seen in your data.
         tax_series = adata_copy.var[tax_level].astype(str).str.strip()
         
-        # Unify all forms of "empty" to 'Unassigned'
-        # Note: We include 'nan' string because astype(str) converts np.nan to 'nan'
+        # Unify all forms of "empty"
         tax_series = tax_series.replace(
-            ['nan', 'NaN', '<NA>', 'None', '', 'NoneType'], 
+            ['nan', 'NaN', 'None', '', '<NA>', 'NoneType'], 
             'Unassigned'
         )
-        
-        # Fill any remaining real NaNs
         tax_series = tax_series.fillna('Unassigned')
         
-        # Update the dataframe
+        # Update the dataframe used for mapping
         adata_copy.var[tax_level] = tax_series
-        # ==================================================================
 
         # Get Counts Matrix
         if 'raw_counts' in adata_copy.layers: 
             counts_mtx = adata_copy.layers['raw_counts']
-            logger.debug("Using 'raw_counts'.")
         else: 
-            logger.warning("Using '.X' for aggregation.")
             counts_mtx = adata_copy.X
             
-        if sparse.issparse(counts_mtx): 
-            counts_mtx = counts_mtx.tocsc()
-        elif hasattr(counts_mtx, 'toarray'): 
-            counts_mtx = counts_mtx.toarray()
-        elif not isinstance(counts_mtx, np.ndarray): 
-            counts_mtx = np.array(counts_mtx)
+        if sparse.issparse(counts_mtx):
+            counts_mtx = counts_mtx.tocsc() # type: ignore
+        else:
+            # If not sparse, ensure it's a numpy array
+            if hasattr(counts_mtx, 'toarray'):
+                counts_mtx = counts_mtx.toarray() # type: ignore
+            elif not isinstance(counts_mtx, np.ndarray):
+                counts_mtx = np.array(counts_mtx)
             
         asv_to_tax_map = adata_copy.var[tax_level]
-        logger.debug("Creating sparse grouper matrix for aggregation...")
         
-        # 2. Get unique taxa and their indices
+        # Get unique taxa and their indices
         unique_taxa, group_indices = np.unique(asv_to_tax_map, return_inverse=True)
 
-        # 3. Create the (n_groups x n_features) grouper matrix
+        # Create sparse grouper matrix
         n_features = adata_copy.n_vars
         n_groups = len(unique_taxa)
         
-        if counts_mtx is not None and hasattr(counts_mtx, 'dtype') and counts_mtx.dtype is not None:
+        if counts_mtx is not None and hasattr(counts_mtx, 'dtype'):
             grouper_dtype = np.dtype(counts_mtx.dtype)
         else:
             grouper_dtype = np.float64
@@ -279,19 +259,17 @@ class AnalysisUtils:
             shape=(n_groups, n_features)
         )
 
-        # 4. Perform the aggregation with matrix multiplication
+        # Perform the aggregation
         if not isinstance(counts_mtx, csr_matrix):
             if issparse(counts_mtx):
-                counts_mtx = counts_mtx.tocsr()
+                counts_mtx = counts_mtx.tocsr() # type: ignore
             else:
                 counts_mtx = csr_matrix(counts_mtx)
                 
-        logger.debug("Performing sparse aggregation...")
         agg_mtx = counts_mtx @ M_grouper.T 
 
-        # 5. Create the new AnnData
+        # Create the new AnnData
         new_var = pd.DataFrame(index=unique_taxa)
-        new_var.index.name = tax_level
         
         if not isinstance(agg_mtx, csr_matrix):
             agg_mtx = csr_matrix(agg_mtx)
@@ -302,64 +280,105 @@ class AnalysisUtils:
             var=new_var, 
             dtype=agg_mtx.dtype
         )
+        
+        # Explicitly set the index to the taxonomy strings
+        adata_new.var_names = unique_taxa.astype(str).tolist()
+        adata_new.var.index.name = tax_level
+        
+        # Save the name as a column so downstream tools can find it
+        adata_new.var[tax_level] = adata_new.var.index.values
         adata_new.layers['raw_counts'] = csr_matrix(adata_new.X)
-        logger.debug(f"Counts aggregation resulted in {adata_new.n_vars} groups.")
         
-        # 6. Aggregate .var metadata
-        # (This block remains largely the same, but relies on the cleaned taxonomy)
-        tax_levels_all = AnalysisUtils.TAX_LEVELS_ALL
-        levels_to_keep = tax_levels_all[:tax_levels_all.index(tax_level) + 1] if tax_level in tax_levels_all else [tax_level]
-        
-        logger.debug(f"Aggregating .var metadata up to {tax_level}...")
-        try:
-            var_meta_orig = adata_in.var.copy()
-            # Use the CLEANED series for grouping metadata
-            var_meta_orig['__group_key__'] = tax_series.values 
-            
-            agg_funcs = {}
-            levels_present = [lvl for lvl in levels_to_keep if lvl in var_meta_orig.columns]
-            
-            for lvl in levels_present: 
-                agg_funcs[lvl] = lambda series: series.dropna().iloc[0] if not series.dropna().empty else np.nan
-            
-            func_prefixes = ("FAPROTAX_", "CUSTOM_", "PICRUST_") 
-            func_cols = [c for c in var_meta_orig.columns if c.startswith(func_prefixes) and var_meta_orig[c].dtype == bool]
-            
-            if func_cols: 
-                for f_col in func_cols: agg_funcs[f_col] = 'any'
-            
-            other_cols = [c for c in var_meta_orig.columns if c not in agg_funcs and c != '__group_key__']
-            for o_col in other_cols: 
-                agg_funcs[o_col] = lambda series: series.dropna().iloc[0] if not series.dropna().empty else np.nan
-            
-            grouped_meta = var_meta_orig.groupby('__group_key__', observed=False).agg(agg_funcs)
-            adata_new.var = grouped_meta.reindex(unique_taxa)
-            adata_new.var.index.name = tax_level
-            
-        except Exception as e: 
-            logger.warning(f"Could not aggregate .var metadata: {e}")
-            adata_new.var_names = unique_taxa.astype(str).tolist()
-            adata_new.var = pd.DataFrame(index=adata_new.var_names)
-            adata_new.var.index.name = tax_level
-            
-        # Final formatting
-        adata_new.var_names = adata_new.var_names.astype(str).tolist()
-        adata_new.var.index = adata_new.var.index.astype(str)
-        
-        # [CRITICAL SAFETY CHECK]
+        # Filter 'Unassigned' 
         if 'Unassigned' in adata_new.var_names:
-            if len(adata_new.var_names) == 1:
-                logger.warning(f"⚠️ All features mapped to 'Unassigned'! Keeping it to avoid empty dataset.") 
-            else:
+            if len(adata_new.var_names) > 1:
                 logger.info("Filtering 'Unassigned' taxa.")
                 adata_new = adata_new[:, adata_new.var_names != 'Unassigned'].copy()
-            
+            else:
+                logger.warning("⚠️ All features mapped to 'Unassigned'! Keeping it.")
+        
+        # Ensure obs indices are string
+        adata_new.obs_names = adata_new.obs_names.astype(str).tolist()
+        
         logger.info(f"Aggregation complete. New shape: {adata_new.shape}")
         return adata_new
     
     @staticmethod
-    def clr_transform(adata_in: ad.AnnData, pseudocount: float = 1.0, use_cache: bool = True) -> pd.DataFrame:
+    def clr_transform(adata: ad.AnnData, pseudocount: float = 1.0) -> pd.DataFrame:
+        """Standard CLR (Legacy support)."""
+        return AnalysisUtils.rclr_transform(adata)
+
+    @staticmethod
+    def rclr_transform(adata: ad.AnnData) -> pd.DataFrame:
+        """
+        Robust CLR (rCLR): Preserves sparsity by ignoring zeros in geometric mean
+        and keeping zeros as zeros in the output. Matches Martino et al. (2019) mSystems.
+        """
+        try:
+            # Access the matrix
+            mat = adata.layers.get('raw_counts', adata.X)
+
+            # Make matrix sparse
+            if not issparse(mat): mat_sparse = csr_matrix(mat)
+            else: mat_sparse = mat.tocsr()
+
+            # Perform calculations ONLY on non-zero data
+            log_data = np.log(mat_sparse.data)
+            log_sparse = mat_sparse.copy()
+            log_sparse.data = log_data
+
+            # Mean(Log) per row (sample) - sum of logs / number of non-zero elements
+            sum_log = np.array(log_sparse.sum(axis=1)).flatten()
+            count_nz = np.diff(mat_sparse.indptr)
+
+            # Avoid division by zero for empty samples
+            count_nz[count_nz == 0] = 1.0
+            log_gmeans = sum_log / count_nz
+            
+            # rCLR = log(x_i) - log(gmean_nz)
+            # Subtract the mean of sample i from all non-zero elements of sample i
+            for i in range(mat_sparse.shape[0]):
+                start, end = log_sparse.indptr[i], log_sparse.indptr[i+1]
+                log_sparse.data[start:end] -= log_gmeans[i]
+            
+            # Return sparse matrix instead of dense to avoid massive memory allocation
+            # (463K samples × 98K features = 160GB+ if densified)
+            return log_sparse
+        except Exception as e:
+            get_logger("workflow_16s").error(f"rCLR transform failed: {e}")
+            return None
+
+    @staticmethod
+    def clr_transform_from_df(df: pd.DataFrame, pseudocount: float = 1.0) -> pd.DataFrame:
+        """
+        Robust CLR for DataFrames.
+        Arguments 'pseudocount' is ignored for rCLR but kept for API compatibility.
+        """
+        mat = df.values.astype(np.float64)
+        mask = mat > 0
+        
+        log_mat = np.zeros_like(mat)
+        np.log(mat, where=mask, out=log_mat)
+        
+        sum_log = np.sum(log_mat, axis=1)
+        count_nz = np.sum(mask, axis=1)
+        count_nz[count_nz == 0] = 1.0
+        
+        log_gmeans = sum_log / count_nz
+        
+        result = log_mat - log_gmeans[:, None]
+        result[~mask] = 0.0
+        
+        return pd.DataFrame(result, index=df.index, columns=df.columns)
+    
+    @staticmethod
+    def clr_transform_vanilla(
+        adata_in: ad.AnnData, 
+        pseudocount: float = 1.0, 
+        use_cache: bool = True
+    ) -> pd.DataFrame:
         """Centered log-ratio transformation with optional caching."""
+        logger = get_logger("workflow_16s")
         # [FIX] Force conversion to string tuple to avoid 'implicit conversion' warnings
         obs_key = hash(tuple(str(x) for x in adata_in.obs_names))
         var_key = hash(tuple(str(x) for x in adata_in.var_names))
@@ -378,9 +397,9 @@ class AnalysisUtils:
             counts_mtx = adata_in.X
             
         if sparse.issparse(counts_mtx): 
-            counts_mtx = counts_mtx.toarray()
-        if 'sparse' in str(type(counts_mtx)): 
-            counts_mtx = counts_mtx.toarray()
+            counts_mtx = counts_mtx.toarray() # type: ignore
+        elif 'sparse' in str(type(counts_mtx)): 
+            counts_mtx = counts_mtx.toarray() # type: ignore
             
         counts_mtx = np.asarray(counts_mtx)
         counts_mtx_pseudo = counts_mtx + pseudocount
@@ -397,8 +416,41 @@ class AnalysisUtils:
         return clr_df
     
     @staticmethod
+    def clr_transform_from_df_vanilla(
+        df: pd.DataFrame, 
+        pseudocount: float = 1.0
+    ) -> pd.DataFrame:
+        """
+        Applies Centered Log-Ratio (CLR) transformation directly to a feature DataFrame.
+        Useful after manual filtering or subsetting operations.
+        """
+        logger = get_logger("workflow_16s")
+        if df is None or df.empty:
+            logger.warning("Empty DataFrame passed to CLR transform.")
+            return df
+
+        # Ensure numeric types
+        df_numeric = df.apply(pd.to_numeric, errors='coerce').fillna(0)
+
+        # Apply pseudocount to handle zeros in compositional data
+        df_pseudo = df_numeric + pseudocount
+
+        # Perform CLR: log(x) - mean(log(x))
+        log_data = np.log(df_pseudo)
+        # Compute geometric mean across features (axis=1) for each sample
+        gm_log = log_data.mean(axis=1)
+        
+        # Subtract mean from each row
+        clr_data = log_data - gm_log[:, np.newaxis]
+        clr_df = pd.DataFrame(clr_data, index=df.index, columns=df.columns)
+
+        logger.debug(f"Applied direct CLR transform to DataFrame: {clr_df.shape}")
+        return clr_df
+    
+    @staticmethod
     def clear_clr_cache():
         """Clear the CLR transform cache to free memory."""
+        logger = get_logger("workflow_16s")
         n_cached = len(AnalysisUtils._clr_cache)
         AnalysisUtils._clr_cache.clear()
         logger.info(f"Cleared CLR cache ({n_cached} entries removed)")
@@ -436,6 +488,7 @@ class AnalysisUtils:
         max_classes: int = 10
     ) -> Dict[str, Union[List[str], Dict]]:
         """Pre-filter ML targets to avoid small class size warnings."""
+        logger = get_logger("workflow_16s")
         valid_targets = []
         skipped_targets = []
         skip_reasons = {}
@@ -489,11 +542,18 @@ class AnalysisUtils:
         return {'valid': valid_targets, 'skipped': skipped_targets, 'reasons': skip_reasons}
 
     @staticmethod
-    def find_plottable_metadata(adata: ad.AnnData, fullness_threshold: float = 0.4, max_categories: int = 50) -> Dict[str, List[str]]:
+    def find_plottable_metadata(
+        adata: ad.AnnData, 
+        fullness_threshold: float = 0.4, 
+        max_categories: int = 50,
+        admin_noise_columns: Optional[List[str]] = None,  
+        **kwargs,
+    ) -> Dict[str, List[str]]:
         """
         Identifies plottable numeric and categorical columns in .obs.
         Consolidates exclusion logging to avoid clutter.
         """
+        logger = get_logger("workflow_16s")
         logger.info(f"Identifying plottable metadata (Fullness > {fullness_threshold}, Max Categories < {max_categories})...")
         categorical_cols = []
         numeric_cols = []
@@ -507,7 +567,7 @@ class AnalysisUtils:
             
         for col in obs_df.columns:
             # Check for exclusion criteria
-            if col in AnalysisUtils.ADMIN_NOISE_COLUMNS: 
+            if col in AnalysisUtils.ADMIN_NOISE_COLUMNS or (admin_noise_columns and col in admin_noise_columns): 
                 excluded_cols[col] = 'admin list'
                 continue
                 
@@ -538,10 +598,8 @@ class AnalysisUtils:
             if n_unique <= 1: 
                 excluded_cols[col] = '1 unique value'
                 continue
-                
-            # --- Classification Logic ---
             
-            # 1. Check if column is NUMERIC first (BEFORE checking cardinality)
+            # Check if column is NUMERIC first 
             if pd.api.types.is_numeric_dtype(col_dtype):
                 # Treat low-cardinality integers as categorical (but not floats)
                 if pd.api.types.is_integer_dtype(col_dtype) and n_unique < max_categories / 2: 
@@ -550,12 +608,12 @@ class AnalysisUtils:
                     numeric_cols.append(col)
                 continue
             
-            # 2. Boolean types
+            # Boolean types
             if isinstance(col_dtype, type(pd.BooleanDtype())) or pd.api.types.is_bool_dtype(col_dtype):
                 categorical_cols.append(col)
                 continue
                     
-            # 3. String / Object / Categorical
+            # String / Object / Categorical
             if pd.api.types.is_string_dtype(col_dtype) or pd.api.types.is_object_dtype(col_dtype) or isinstance(col_dtype, pd.CategoricalDtype):
                 # Now check cardinality for non-numeric types
                 if n_unique > max_categories: 
@@ -593,7 +651,6 @@ class AnalysisUtils:
             else: 
                 excluded_cols[col] = f'unknown dtype ({col_dtype})'
 
-        # --- Grouped Logging ---
         logger.info(f"Found {len(numeric_cols)} numeric and {len(categorical_cols)} categorical columns eligible for analysis.")
         
         if excluded_cols:

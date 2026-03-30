@@ -11,27 +11,27 @@ Orchestrates all quality control modules:
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import pandas as pd
 import anndata as ad
 
-from .metadata_validator import MetadataValidator, ENVOOntology
-from .primer_qc import PrimerQC
-from .sample_validator import SampleIdentityValidator
-from .contamination_enhanced import (
+from .contamination import (
     detect_contaminants_reference_based,
     detect_cross_sample_contamination,
-    remove_contaminants_enhanced
+    remove_contaminants as _remove_contaminants
 )
+from .primer_qc import PrimerQC
 from .validation import (
     validate_config,
     validate_metadata,
     validate_adata,
-    create_safe_output_dir,
+    ENVOOntology,
+    MetadataValidator,
+    SampleIdentityValidator,
     QCValidationError
 )
-
-logger = logging.getLogger('workflow_16s')
+from workflow_16s.utils.logger import get_logger
+logger = get_logger("workflow_16s")
 
 
 class ComprehensiveQC:
@@ -59,8 +59,11 @@ class ComprehensiveQC:
                 logger.warning(f"QC configuration issues: {errors}")
                 logger.warning("Continuing with default values where possible")
         
-    def run_metadata_qc(self, metadata: pd.DataFrame, 
-                       output_dir: Optional[Path] = None) -> Dict:
+    def run_metadata_qc(
+        self,
+        metadata: pd.DataFrame,
+        output_dir: Optional[Path] = None
+    ) -> Dict:
         """
         Run comprehensive metadata validation.
         
@@ -78,8 +81,12 @@ class ComprehensiveQC:
         # Validate input
         is_valid, errors = validate_metadata(metadata)
         if not is_valid:
-            logger.error(f"Metadata validation failed: {errors}")
-            return {'cleaned_metadata': metadata, 'report': pd.DataFrame(), 'n_removed_columns': 0}
+            logger.error(f"［］Metadata validation failed: {errors}")
+            return {
+                'cleaned_metadata': metadata, 
+                'report': pd.DataFrame(), 
+                'n_removed_columns': 0
+            }
         
         try:
             validator = MetadataValidator(metadata, self.config)
@@ -90,12 +97,13 @@ class ComprehensiveQC:
             # Save report if output_dir provided
             if output_dir:
                 try:
-                    output_dir = create_safe_output_dir(output_dir, "metadata QC")
+                    output_dir = Path(output_dir)
+                    output_dir.mkdir(parents=True, exist_ok=True)
                     report_path = output_dir / 'metadata_validation_report.csv'
                     report.to_csv(report_path, index=False)
-                    logger.info(f"Saved metadata validation report: {report_path}")
+                    logger.info(f"［］Saved metadata validation report: {report_path}")
                 except Exception as e:
-                    logger.warning(f"Could not save metadata report: {e}")
+                    logger.warning(f"［］Could not save metadata report: {e}")
             
             self.results['metadata_validation'] = report
             
@@ -106,12 +114,15 @@ class ComprehensiveQC:
             }
         
         except Exception as e:
-            logger.error(f"Metadata QC failed: {e}", exc_info=True)
+            logger.error(f"［］Metadata QC failed: {e}", exc_info=True)
             return {'cleaned_metadata': metadata, 'report': pd.DataFrame(), 'n_removed_columns': 0}
     
-    def run_primer_qc(self, fastq_files: List[Union[str, Path]], 
-                      primers: Dict[str, str],
-                      output_dir: Optional[Path] = None) -> pd.DataFrame:
+    def run_primer_qc(
+        self, 
+        fastq_files: Sequence[Union[str, Path]], 
+        primers: Dict[str, str],
+        output_dir: Optional[Path] = None
+    ) -> pd.DataFrame:
         """
         Run primer quality control on FASTQ files.
         
@@ -136,14 +147,17 @@ class ComprehensiveQC:
         
         # Run batch check
         report_path = output_dir / 'primer_qc_report.html' if output_dir else None
-        results = primer_qc.batch_check(fastq_files, output_report=report_path)
+        results = primer_qc.batch_check(list(fastq_files), output_report=report_path)
         
         self.results['primer_qc'] = results
         
         return results
     
-    def run_sample_validation(self, adata: ad.AnnData,
-                             output_dir: Optional[Path] = None) -> Dict:
+    def run_sample_validation(
+        self, 
+        adata: ad.AnnData,
+        output_dir: Optional[Path] = None
+    ) -> Dict:
         """
         Run sample identity validation.
         
@@ -157,47 +171,7 @@ class ComprehensiveQC:
         logger.info("="*80)
         logger.info("SAMPLE VALIDATION")
         logger.info("="*80)
-        
-        # Validate input
-        is_valid, errors = validate_adata(adata)
-        if not is_valid:
-            logger.error(f"AnnData validation failed: {errors}")
-            return {'validation_df': pd.DataFrame()}
-        
-        try:
-            validator = SampleIdentityValidator()
-            validation_df = validator.validate_all(adata)
-            
-            # Save report if output_dir provided
-            if output_dir:
-                try:
-                    output_dir = create_safe_output_dir(output_dir, "sample validation")
-                    report_path = output_dir / 'sample_validation_report.csv'
-                    validation_df.to_csv(report_path)
-                    logger.info(f"Saved sample validation report: {report_path}")
-                except Exception as e:
-                    logger.warning(f"Could not save sample validation report: {e}")
-            
-            self.results['sample_validation'] = validation_df
-            
-            return {'validation_df': validation_df}
-        
-        except Exception as e:
-            logger.error(f"Sample validation failed: {e}", exc_info=True)
-            return {'validation_df': pd.DataFrame()}
-        """
-        Run sample identity validation.
-        
-        Args:
-            adata: AnnData object with metadata and taxonomy
-        
-        Returns:
-            DataFrame with validation results per sample
-        """
-        logger.info("="*80)
-        logger.info("SAMPLE IDENTITY VALIDATION")
-        logger.info("="*80)
-        
+
         # Ensure ENVO categorization is done
         if 'env_category_type' not in adata.obs.columns:
             logger.info("Running ENVO categorization first...")
@@ -213,17 +187,42 @@ class ComprehensiveQC:
             adata.obs['env_category_type'] = categories.apply(lambda x: x['category'])
             adata.obs['env_category_confidence'] = categories.apply(lambda x: x['confidence'])
         
-        validator = SampleIdentityValidator(adata)
-        validation_results = validator.validate_all()
+                # Validate input
+        is_valid, errors = validate_adata(adata)
+        if not is_valid:
+            logger.error(f"［］AnnData validation failed: {errors}")
+            return {'validation_df': pd.DataFrame()}
         
-        self.results['sample_validation'] = validation_results
+        try:
+            validator = SampleIdentityValidator(adata)
+            validation_df = validator.validate_all()
+            
+            # Save report if output_dir provided
+            if output_dir:
+                try:
+                    output_dir = Path(output_dir)
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    report_path = output_dir / 'sample_validation_report.csv'
+                    validation_df.to_csv(report_path)
+                    logger.info(f"［］Saved sample validation report: {report_path}")
+                except Exception as e:
+                    logger.warning(f"［］Could not save sample validation report: {e}")
+            
+            self.results['sample_validation'] = validation_df
+            
+            return {'validation_df': validation_df}
         
-        return validation_results
+        except Exception as e:
+            logger.error(f"［］Sample validation failed: {e}", exc_info=True)
+            return {'validation_df': pd.DataFrame()}
     
-    def run_contamination_detection(self, adata: ad.AnnData,
-                                     method: str = 'combined',
-                                     remove_contaminants: bool = False,
-                                     threshold: float = 0.5) -> Tuple[ad.AnnData, pd.DataFrame]:
+    def run_contamination_detection(
+        self, 
+        adata: ad.AnnData,
+        method: str = 'combined',
+        remove_contaminants: bool = False,
+        threshold: float = 0.5
+    ) -> Tuple[ad.AnnData, pd.DataFrame]:
         """
         Run contamination detection.
         
@@ -236,9 +235,9 @@ class ComprehensiveQC:
         Returns:
             Tuple of (cleaned AnnData, contamination scores)
         """
-        logger.info("="*80)
-        logger.info("CONTAMINATION DETECTION")
-        logger.info("="*80)
+        logger.info("="*80,
+                    "\nCONTAMINATION DETECTION",
+                    "="*80)
         
         # Determine environment types to exclude from human contamination checks
         exclude_env = []
@@ -261,14 +260,14 @@ class ComprehensiveQC:
             cross_contam = detect_cross_sample_contamination(adata, batch_column=batch_col)
             
             if cross_contam:
-                logger.warning(f"Detected potential cross-contamination in {len(cross_contam)} batches")
+                logger.warning(f"［］Detected potential cross-contamination in {len(cross_contam)} batches")
                 self.results['cross_contamination'] = cross_contam
         
         self.results['contamination_scores'] = contam_scores
         
         # Remove contaminants if requested
         if remove_contaminants:
-            adata_clean = remove_contaminants_enhanced(
+            adata_clean = _remove_contaminants(
                 adata,
                 contam_scores,
                 threshold=threshold,
@@ -278,12 +277,14 @@ class ComprehensiveQC:
         
         return adata, contam_scores
     
-    def run_all(self, 
-                adata: ad.AnnData,
-                fastq_files: Optional[List[Path]] = None,
-                primers: Optional[Dict[str, str]] = None,
-                output_dir: Optional[Path] = None,
-                remove_contaminants: bool = True) -> Tuple[ad.AnnData, Dict[str, Any]]:
+    def run_all(
+        self, 
+        adata: ad.AnnData,
+        fastq_files: Optional[List[Path]] = None,
+        primers: Optional[Dict[str, str]] = None,
+        output_dir: Optional[Path] = None,
+        remove_contaminants: bool = True
+    ) -> Tuple[ad.AnnData, Dict[str, Any]]:
         """
         Run complete QC pipeline.
         
@@ -306,7 +307,7 @@ class ComprehensiveQC:
             output_dir.mkdir(parents=True, exist_ok=True)
         
         # 1. Metadata QC
-        logger.info("\n[1/4] Metadata Validation")
+        logger.info("［1/4］Metadata Validation")
         cleaned_metadata, metadata_report = self.run_metadata_qc(adata.obs)
         adata.obs = cleaned_metadata
         
@@ -315,18 +316,19 @@ class ComprehensiveQC:
         
         # 2. Primer QC (if FASTQ files provided)
         if fastq_files and primers:
-            logger.info("\n[2/4] Primer Quality Control")
+            logger.info("［2/4］Primer Quality Control")
             primer_results = self.run_primer_qc(fastq_files, primers, output_dir)
             
             # Flag samples with poor primer detection
             if output_dir:
                 primer_results.to_csv(output_dir / 'primer_qc_results.csv', index=False)
         else:
-            logger.info("\n[2/4] Primer QC skipped (no FASTQ files provided)")
+            logger.info("［2/4］Primer QC skipped (no FASTQ files provided)")
         
         # 3. Sample Identity Validation
-        logger.info("\n[3/4] Sample Identity Validation")
-        sample_validation = self.run_sample_validation(adata)
+        logger.info("［3/4］Sample Identity Validation")
+        sample_validation_result = self.run_sample_validation(adata)
+        sample_validation = sample_validation_result['validation_df']
         
         # Add validation results to obs
         for col in sample_validation.columns:
@@ -336,7 +338,7 @@ class ComprehensiveQC:
             sample_validation.to_csv(output_dir / 'sample_validation_report.csv')
         
         # 4. Contamination Detection
-        logger.info("\n[4/4] Contamination Detection")
+        logger.info("［4/4］Contamination Detection")
         adata, contam_scores = self.run_contamination_detection(
             adata,
             method='combined',
@@ -360,10 +362,10 @@ class ComprehensiveQC:
         logger.info("="*80)
         logger.info("QC PIPELINE COMPLETE")
         logger.info("="*80)
-        logger.info(f"Samples: {len(adata.obs)}")
-        logger.info(f"Features: {len(adata.var)}")
-        logger.info(f"Flagged samples: {(adata.obs['qc_overall_flag'] != 'PASS').sum()}")
-        logger.info(f"Removed contaminants: {contam_scores['is_contaminant'].sum()}")
+        logger.info(f"Samples: {len(adata.obs)}\n"
+                    f"Features: {len(adata.var)}\n"
+                    f"Flagged samples: {(adata.obs['qc_overall_flag'] != 'PASS').sum()}\n"
+                    f"Removed contaminants: {contam_scores['is_contaminant'].sum()}")
         
         return adata, self.results
     
@@ -448,9 +450,11 @@ class ComprehensiveQC:
         logger.info(f"Generated HTML report: {output_path}")
 
 
-def quick_qc(adata: ad.AnnData, 
-             output_dir: Optional[Path] = None,
-             remove_contaminants: bool = True) -> ad.AnnData:
+def quick_qc(
+    adata: ad.AnnData, 
+    output_dir: Optional[Path] = None,
+    remove_contaminants: bool = True
+) -> ad.AnnData:
     """
     Quick QC function for easy integration.
     

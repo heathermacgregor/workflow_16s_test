@@ -1,3 +1,4 @@
+# workflow_16s/api/environmental_data/__init__.py
 """
 Environmental Data Aggregation Script
 
@@ -5,6 +6,15 @@ This script integrates multiple environmental APIs to collect comprehensive
 environmental data for a given location. It's designed to be production-ready
 with proper error handling, logging, and configuration management.
 """
+
+#from .google.arkin_env_agents import ArkinEnvAgents
+from .arkin import ArkinEnvAgents, run_arkin_enrichment
+from .nuclear_fuel_cycle import NFCFacilitiesHandler
+from .other import EnvironmentalDataCollector
+__all__ = [
+    "ArkinEnvAgents", "run_arkin_enrichment",
+    "EnvironmentalDataCollector", "NFCFacilitiesHandler"
+]
 
 import json
 import logging
@@ -30,11 +40,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
-# Load environment variables
 load_dotenv()
 from pathlib import Path
-# Constants
-CACHE_DIR = Path("./cache")
+import tempfile
+
+# Force the cache to live in the system temp folder, bypassing the stale NFS handle
+CACHE_DIR = Path(tempfile.gettempdir()) / "workflow_16s_env_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 CACHE_EXPIRY_HOURS = 24
 REQUEST_TIMEOUT = 30

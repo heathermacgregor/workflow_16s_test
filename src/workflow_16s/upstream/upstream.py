@@ -1,445 +1,575 @@
-"""
-16S rRNA Analysis Pipeline
-----------------------------------------------------------------------------------------
-Comprehensive workflow for analysis of 16S rRNA amplicon sequencing data.
-This version includes optional functionality to identify samples near
-Nuclear Fuel Cycle (NFC) facilities and integrate them into the analysis.
-"""
-# ===================================== IMPORTS ====================================== #
+# workflow_16s/upstream/upstream.py
 
-# Standard Library Imports
-import copy
-import logging
-import yaml
 import argparse
-from pathlib import Path
-from typing import List, Optional, Tuple, Union
-
-# Third-Party Imports
-import anndata as ad
 import asyncio
-import pandas as pd
-from pydantic import ValidationError
+import json
+import logging
+import time
+import yaml
+from collections import deque
+from pathlib import Path
+from typing import List, Optional, Tuple
+from datetime import datetime
 
-# Local Imports
-from workflow_16s.api.ena.metadata_api import get_n_samples_by_bioproject_async
-from workflow_16s.api.ena.metadata.cache import CacheManager as EnaCacheManager
-from workflow_16s.api.nuclear_fuel_cycle.nfc import NFCFacilitiesHandler
+import anndata as ad
+import pandas as pd
+from rich.live import Live
+from rich.table import Table
+from rich.panel import Panel
+from rich.console import Group, Console
+from rich.layout import Layout
+from rich.text import Text
+
+console = Console()
+
+from workflow_16s.api.ena import SQLiteCacheManager as EnaCacheManager, ENAClient, ENAFetcher, get_counts_bulk_async
+from workflow_16s.api.environmental_data import ArkinEnvAgents, EnvironmentalDataCollector, NFCFacilitiesHandler
+from workflow_16s.api.geospatial.universal_finder import UniversalFacilityFetcher
+from workflow_16s.api.publication.fetcher import PublicationFetcher
 from workflow_16s.api.qiime import execute
-from workflow_16s.config_schema import AppConfig
+from workflow_16s.config import AppConfig
+from workflow_16s.constants import DATASETS_TO_SKIP
 from workflow_16s.upstream.metadata.partition import DatasetPartition
 from workflow_16s.upstream.sequences.analysis import PrimerFinder
 from workflow_16s.upstream.sequences.probebase import import_and_save_database
 from workflow_16s.utils.dir_utils import Project
+from workflow_16s.utils.io import load_datasets_list, load_datasets_info
 from workflow_16s.utils.logger import get_logger, setup_logging
-from workflow_16s.utils.progress import get_progress_bar
-from workflow_16s.utils.publication_fetcher import PublicationFetcher
 
-# ========================== INITIALISATION & CONFIGURATION ========================== #
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+    
+OFFICIAL_TITLES = {
+    "nfc_facilities": "☢️ Nuclear Facility Geospatial Sweep",
+    "sample_discovery": "🔍 Semantic Keyword Scouting",
+    "sieve": "⚖️ Dataset Validation & Sieve",
+    "deep_metadata": "📦 Fetching Deep Metadata (Runs, Samples, Taxa)",
+    "qiime2": "🧬 QIIME 2 Core Processing",
+    "meta_analysis": "🔗 Phylogenetic Meta-Analysis"
+}
 
-logger = get_logger()
-
-# ============================= HELPER FUNCTIONS =================================== #
-
-def load_datasets_list(path: Union[str, Path]) -> List[str]:
-    """Load dataset IDs from a text file, ignoring empty/whitespace lines."""
+def get_computer_name():
     try:
-        path = Path(path)
-        if not path.is_file(): raise FileNotFoundError(f"Dataset list file not found at: {path}")
-        with open(path, "r") as f: return [line.strip() for line in f if line.strip()]
-    except FileNotFoundError as e: logger.error(e); return []
-    except Exception as e: logger.error(f"Error reading dataset list file {path}: {e}"); return []
-
-def load_datasets_info(tsv_path: Union[str, Path]) -> pd.DataFrame:
-    """Load dataset metadata from a TSV file."""
-    try:
-        tsv_path = Path(tsv_path)
-        if not tsv_path.is_file(): raise FileNotFoundError(f"Dataset info file not found at: {tsv_path}")
-        # Specify dtype for accession to prevent numeric conversion
-        df = pd.read_csv(tsv_path, sep="\t", dtype={'ena_project_accession': str, 'dataset_id': str}) 
-        # Remove unnamed columns resulting from Excel spreadsheet saves
-        return df.loc[:, ~df.columns.str.startswith('Unnamed')] 
-    except FileNotFoundError as e: logger.error(e); return pd.DataFrame()
-    except Exception as e: logger.error(f"Error reading dataset info file {tsv_path}: {e}"); return pd.DataFrame()
-
-
-# ================================= MAIN CLASS ===================================== #
+        import socket
+        return socket.gethostname()
+    except:
+        import platform
+        return platform.node()
 
 class Upstream:
     def __init__(self, config: AppConfig):
+        self._last_web_export = 0.0
         self.config = config
         self.project_dir = Project(config)
-        # Load datasets and ensure minimal requirements are met
-        self.datasets = load_datasets_list(config.paths.dataset_list)
-        self.datasets_info = load_datasets_info(config.paths.dataset_info)
-        if not self.datasets: raise ValueError(f"Cannot run workflow: Dataset list '{config.paths.dataset_list}' is missing, empty, or unreadable.")
-        if self.datasets_info.empty: raise ValueError(f"Cannot run workflow: Dataset info file '{config.paths.dataset_info}' is missing, empty, unreadable, or contains no valid data.")
-        # Step 1: Ensure the primer database exists before doing anything else.
+        self.start_time = time.time()
+        self.logger = get_logger("workflow_16s")
+        self.ena_cache_manager = EnaCacheManager(cache_dir=self.project_dir.cache / "ena_metadata")
+        self.ena_fetcher = ENAFetcher(email=self.config.credentials.ena_email, max_concurrent=10, log_interval=10, cache_manager=self.ena_cache_manager)
+        self.ena_client = ENAClient(self.config, fetcher=self.ena_fetcher)
+        
+        self._initialize_datasets()
+        self.log_buffer = deque(maxlen=20) 
+        self._setup_ui_logger()
+        
+        self.ui_stats = {
+            "node_name": get_computer_name(),
+            "current_action": "INITIALIZING...", "sieve_total": 0, "sieve_passed": 0, 'sieve_failed': 0,
+            'fail_low_count': 0, 'fail_metadata': 0, 'fail_primers': 0, "success_h5ad": 0, "failed_h5ad": 0, 
+            "total_samples_found": 0, "nfc_samples": 0, "semantic_samples": 0, "osm_samples": 0,
+            "base_projects": len(self.datasets)
+        }
+        
         self._probebase_setup()
-        # Step 2: Discover all primers ONCE at startup.
-        logger.info("--- Initializing Primer Discovery ---")
         primer_finder = PrimerFinder(self.config.paths.primer_db)
         self.region_to_pairs_map = primer_finder.get_primer_pairs_for_regions()
-        if not self.region_to_pairs_map: raise RuntimeError("Primer discovery failed or no primer pairs found in database. Cannot proceed.")
-        # Initialize NFC handler and data if enabled
-        if config.nfc_facilities.enabled:
-            self.nfc_handler: Optional[NFCFacilitiesHandler] = NFCFacilitiesHandler(config)
-            self.nfc_facilities_df = pd.DataFrame() # Will be populated later if needed
+        
+        self.publication_fetcher = PublicationFetcher(
+            self.config, 
+            cache_path=str(self.project_dir.cache / "publications.db")
+        )
+        self.nfc_handler = NFCFacilitiesHandler(self.config, progress_obj=self.progress_obj, fetcher=self.ena_fetcher) if self.config.nfc_facilities.enabled else None
+        self.nfc_facilities_df = pd.DataFrame()
+        self.env_collector = EnvironmentalDataCollector(self.config)
+        self.arkin_agents = ArkinEnvAgents(self.config)
+        
+        self.processed_subsets, self.failed_subsets, self.data_objects = [], [], []
+
+    def _initialize_datasets(self):
+        if self.config.paths.dataset_list and self.config.paths.dataset_info:
+            self.datasets = load_datasets_list(self.config.paths.dataset_list)
+            self.datasets_info = load_datasets_info(self.config.paths.dataset_info)
+            self._lookup_dict = {}
+            for _, row in self.datasets_info.iterrows():
+                is_ena = str(row.get('dataset_type', 'ENA')).upper() == 'ENA'
+                acc = str(row.get('ena_project_accession', '')).strip().upper()
+                did = str(row.get('dataset_id', '')).strip().upper()
+                if acc and (acc not in self._lookup_dict or is_ena): self._lookup_dict[acc] = row
+                if did and (did not in self._lookup_dict or is_ena): self._lookup_dict[did] = row
         else:
-            self.nfc_handler = None
-            self.nfc_facilities_df = pd.DataFrame()
-        # Initialize lists to store results
-        self.processed_subsets: List[str] = []
-        self.failed_subsets: List[Tuple[str, str]] = []
-        self.data_objects: List[ad.AnnData] = []
-        # Initialize Publication Fetcher
-        self.publication_fetcher = self._initialize_publication_fetcher()
+            self.datasets, self.datasets_info, self._lookup_dict = [], pd.DataFrame(), {}
 
-    def _probebase_setup(self):
-        """Checks for the primer SQLite database and creates it if it's missing."""
-        primer_db_path = Path(self.config.paths.primer_db) 
-        primer_db_path.parent.mkdir(parents=True, exist_ok=True)
-        # Build the primer database if it doesn't exist or is invalid
-        import_and_save_database(db_path=primer_db_path) 
+    def _setup_ui_logger(self):
+        from workflow_16s.utils.progress import get_progress_bar
+        
+        class DequeHandler(logging.Handler):
+            def __init__(self, buffer):
+                super().__init__()
+                self.buffer = buffer
+            def emit(self, record):
+                self.buffer.append(self.format(record))
+                
+        ui_log_handler = DequeHandler(self.log_buffer)
+        ui_log_handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+        self.logger.addHandler(ui_log_handler)
 
-    def _initialize_publication_fetcher(self) -> PublicationFetcher:
-        """Initializes the advanced publication fetcher with caching."""
-        publication_cache_path = self.project_dir.cache / "publications.db"
-        fetcher = PublicationFetcher(config=self.config, cache_path=str(publication_cache_path))
-        logger.info("Advanced publication fetcher initialized.")
-        return fetcher
+        self.progress_obj = get_progress_bar()
+        self.progress_obj.auto_refresh = False
+
+    def _get_dashboard_renderable(self):
+        """Constructs the new Amplicon Workflow Process Monitor Layout."""
+        self._export_web_state()
+        
+        layout = Layout()
+        layout.split_column(
+            Layout(name="header", size=24), # Increased size to fit system stats
+            Layout(name="body")
+        )
+        
+        uptime = str(datetime.now() - datetime.fromtimestamp(self.start_time)).split('.')[0]
+        
+        s_total = max(1, self.ui_stats.get('sieve_total', 0))
+        s_passed = self.ui_stats.get('sieve_passed', 0)
+        q_success = self.ui_stats.get('success_h5ad', 0)
+        
+        stats_table = Table.grid(expand=True)
+        stats_table.add_column(justify="left", style="cyan")
+        stats_table.add_column(justify="right", style="white")
+
+        # --- SYSTEM STATS ---
+        stats_table.add_row("[bold underline]SYSTEM RESOURCES", "")
+        stats_table.add_row(" 🖥️ Node:", f"[magenta]{self.ui_stats['node_name']}")
+        if HAS_PSUTIL:
+            main_proc = psutil.Process()
+            cpu = psutil.cpu_percent(interval=None)
+            ram = main_proc.memory_info().rss / (1024 * 1024 * 1024)
+            threads = main_proc.num_threads()
+            children = len(main_proc.children(recursive=True))
+            stats_table.add_row(" ⚙️ CPU Usage:", f"[yellow]{cpu:.1f}%")
+            stats_table.add_row(" 🧠 RAM (RSS):", f"[yellow]{ram:.2f} GB")
+            stats_table.add_row(" 🧵 Threads/Procs:", f"[yellow]{threads} / {children} children (PID: {main_proc.pid})")
+        stats_table.add_row("", "")
+
+        # --- DISCOVERY SOURCES ---
+        stats_table.add_row("[bold underline]DISCOVERY SOURCE BREAKDOWN", "")
+        stats_table.add_row(" 📂 Base Projects (CSV):", f"[white]{self.ui_stats.get('base_projects', 0)}")
+        if self.config.nfc_facilities.enabled:
+            stats_table.add_row(" ☢️ NFC Facility Hits:", f"[yellow]{self.ui_stats.get('nfc_samples', 0)}")
+        if self.config.sample_discovery.enabled:
+            stats_table.add_row(" 🔍 Semantic Hits:", f"[cyan]{self.ui_stats.get('semantic_samples', 0)}")
+            if self.config.sample_discovery.osm_features:
+                stats_table.add_row(" 🛰️ OSM Geospatial Hits:", f"[blue]{self.ui_stats.get('osm_samples', 0)}")
+        stats_table.add_row(" 🌎 Total Unique Projects:", f"[bold green]{len(self.datasets)}")
+        stats_table.add_row("", "")
+
+        # --- SIEVE & PIPELINE STATUS ---
+        stats_table.add_row("[bold underline]PIPELINE STATUS", "")
+        stats_table.add_row(" ✅ Passed Sieve:", f"[green]{s_passed}/{s_total} ({ (s_passed/s_total)*100:.1f}%)")
+        stats_table.add_row(" 🧪 Successful .h5ad Files:", f"[bold green]{q_success}/{max(1, s_passed)}")
+        stats_table.add_row(" ⏳ Engine Status:", f"[bold yellow]{self.ui_stats.get('current_action', 'IDLE')}")
+
+        header_group = Group(
+            self.progress_obj,
+            Panel(stats_table, title="[bold white]Live Telemetry", border_style="blue")
+        )
+        layout["header"].update(header_group)
+
+        # Log Body
+        log_text = Text()
+        for line in self.log_buffer:
+            if "INFO" in line: color = "green"
+            elif "WARNING" in line: color = "yellow"
+            elif "ERROR" in line: color = "red"
+            else: color = "white"
+            log_text.append(line + "\n", style=color)
+            
+        layout["body"].update(Panel(log_text, title="[bold white]Console Feed", border_style="cyan"))
+        return layout
+
+    def _export_web_state(self):
+        current_time = time.time()
+        if current_time - self._last_web_export < 2.0:
+            return
+        self._last_web_export = current_time
+
+        try:
+            db_path = self.project_dir.cache / "env" / "cache.db"
+            db_size = db_path.stat().st_size if db_path.exists() else 0
+            ena_db = self.project_dir.cache / "ena_metadata" / "ena_cache.db"
+            ena_size = ena_db.stat().st_size if ena_db.exists() else 0
+            db_cache_size = f"{(db_size + ena_size) / (1024 * 1024):.1f} MB"
+        except Exception:
+            db_cache_size = "0 MB"
+
+        process_tree = []
+        if HAS_PSUTIL:
+            try:
+                current_process = psutil.Process()
+                process_tree.append({
+                    "pid": current_process.pid,
+                    "name": current_process.name(),
+                    "cpu": current_process.cpu_percent(interval=None),
+                    "ram": round(current_process.memory_percent(), 1)
+                })
+                for p in current_process.children()[:5]: 
+                    process_tree.append({
+                        "pid": p.pid,
+                        "name": p.name(),
+                        "cpu": p.cpu_percent(interval=None),
+                        "ram": round(p.memory_percent(), 1)
+                    })
+            except Exception: pass
+
+        state = {
+            "stats": {
+                "datasets_processed": self.ui_stats.get('success_h5ad', 0),
+                "total_samples": self.ui_stats.get('total_samples_found', 0),
+                "total_asv_features": self.ui_stats.get('total_asv_features', 0),
+                "db_cache_size": db_cache_size,
+                "current_action": self.ui_stats.get('current_action', 'Waiting for pipeline...')
+            },
+            "tasks": [
+                {
+                    "description": t.description,
+                    "total": t.total or 0,
+                    "completed": t.completed or 0,
+                    "percentage": round(t.percentage or 0, 1) if t.percentage else 0
+                } for t in self.progress_obj.tasks
+            ],
+            "process_tree": process_tree,
+            "nfc_hot_sites": self.ui_stats.get('hot_sites', []),
+            "console_feed": list(self.log_buffer)
+        }
+        
+        try:
+            tmp_path = Path(self.project_dir.main) / "workflow_state_tmp.json"
+            final_path = Path(self.project_dir.main) / "workflow_state.json"
+            with open(tmp_path, "w") as f:
+                json.dump(state, f)
+            tmp_path.replace(final_path) 
+        except Exception as e:
+            self.logger.error(f" ❌ JSON Dashboard Export Failed: {e}")
 
     async def execute(self):
-        """Main execution workflow orchestrating all steps."""
-        logger.info("Starting upstream workflow execution...")
-        await self.nfc()
-        await self.sort_datasets()
-        await self.process_datasets()
-        self._run_metaanalysis()
-        logger.info("Upstream workflow execution finished.")
+        self._append_to_live_report("STARTUP", "INITIALIZING", 0, "Pipeline starting...")
+        with Live(get_renderable=self._get_dashboard_renderable, refresh_per_second=4, screen=True) as live:
+            async with self.ena_fetcher as fetcher:
+                self.logger.info("🎬 Session opened. Starting consolidated discovery...")
+
+                if self.config.nfc_facilities.enabled:
+                    self.ui_stats["current_action"] = "GEOSPATIAL SWEEP"
+                    nfc_task = self.progress_obj.add_task(OFFICIAL_TITLES["nfc_facilities"], total=490)
+                    await self.nfc(fetcher=fetcher, task_id=nfc_task)
+
+                if self.config.sample_discovery.enabled:
+                    self.ui_stats["current_action"] = "SEMANTIC SCOUTING"
+                    kw_ids = await self._perform_discovery(fetcher=fetcher)
+                    self.datasets.extend(kw_ids)
+
+                self.datasets = sorted(list(set(self.datasets)))
+                if not self.datasets: return []
+
+                self.ui_stats["current_action"] = "DATASET VALIDATION (SIEVE)"
+                sieve_task = self.progress_obj.add_task(OFFICIAL_TITLES["sieve"], total=len(self.datasets))
+                await self.sort_datasets(sieve_task_id=sieve_task)
+                
+                self.ui_stats["current_action"] = "DEEP METADATA & QIIME"
+                await self.process_datasets(live_ui=live)
+                
+                self.ui_stats["current_action"] = "META-ANALYSIS"
+                self._run_metaanalysis()
+                
+                self.ui_stats["current_action"] = "PIPELINE COMPLETE ✅"
         return self.data_objects
-
-    async def nfc(self):
-        """
-        Fetches NFC facility data, identifies contaminated and non-contaminated
-        projects, reports on the sample balance, and adds all found projects
-        to the processing list.
-        """
-        if not self.nfc_handler: logger.info("NFC facility processing is disabled."); return
-        logger.info("NFC Facility Processing:")
+    
+    async def nfc(self, fetcher=None, task_id=None):
+        if not self.nfc_handler: return
         self.nfc_facilities_df = await self.nfc_handler.nfc_facilities()
-        if not self.config.nfc_facilities.fetch_nearby_samples: logger.info("NFC sample fetching is disabled in config."); return
-        if self.nfc_facilities_df.empty: logger.warning("NFC nearby sample fetching enabled, but failed to load facility data. Skipping."); return
-        # --- 1. Get Contaminated Projects and Count ---
-        logger.info("Fetching 'contaminated' (NFC-nearby) projects and samples...")
-        try:
-            contaminated_accessions = await self.nfc_handler.get_nfc_project_accessions()
-            contaminated_sample_count = await self.nfc_handler.get_contaminated_sample_count_async()
-            if not contaminated_accessions:
-                logger.warning("No contaminated projects found.")
-                contaminated_sample_count = 0
-            else: logger.info(f"Contaminated pool: {len(contaminated_accessions)} projects with {contaminated_sample_count} total samples.")
-            # Add new contaminated projects to the main dataset list
-            current_set = set(self.datasets)
-            new_contaminated_projects = [p for p in contaminated_accessions if p not in current_set]
-            if new_contaminated_projects:
-                logger.info(f"Adding {len(new_contaminated_projects)} new contaminated projects to the processing list.")
-                self.datasets.extend(new_contaminated_projects)
-            else: logger.info("All known contaminated projects are already in the dataset list.")
-        except Exception as e:
-            logger.error(f"Failed during contaminated project fetching: {e}", exc_info=True)
-            contaminated_sample_count = 0 
-        # --- 2. Get Non-Contaminated Projects and Count ---
-        logger.info("Fetching 'non-contaminated' (far from NFC) projects to balance dataset...")
-        non_contaminated_sample_count = 0
-        non_contaminated_projects_to_add = []
-        try:
-            non_contaminated_accessions = await self.nfc_handler.get_non_contaminated_project_accessions_async()
-            if not non_contaminated_accessions: logger.warning("Could not find any non-contaminated projects.")
-            else:
-                # We need to count the samples for this new list
-                ena_cache_manager = EnaCacheManager(cache_dir=self.project_dir.cache / "ena_metadata")
-                current_set = set(self.datasets) # Update set to include new contaminated projects
-                with get_progress_bar() as progress:
-                    task = progress.add_task("Counting non-contaminated samples...", total=len(non_contaminated_accessions))
-                    for proj_id in non_contaminated_accessions:
-                        progress.update(task, description=f"Counting {proj_id}...")
-                        if proj_id in current_set: progress.update(task, advance=1); continue # Skip if already in the list
-                        try:
-                            n_samples = await get_n_samples_by_bioproject_async(bioproject_accession=proj_id, email=self.config.credentials.ena_email, cache_manager=ena_cache_manager)
-                            if n_samples > 0:
-                                non_contaminated_sample_count += n_samples
-                                non_contaminated_projects_to_add.append(proj_id)
-                        except Exception as e: logger.warning(f"Failed to count samples for non-contaminated project {proj_id}: {e}")
-                        progress.update(task, advance=1)
-                logger.info(f"Found {len(non_contaminated_projects_to_add)} new non-contaminated projects with {non_contaminated_sample_count} total samples.")
-                # Add new non-contaminated projects to the main dataset list
-                if non_contaminated_projects_to_add: self.datasets.extend(non_contaminated_projects_to_add)
-        except Exception as e: logger.error(f"Failed during non-contaminated project fetching: {e}", exc_info=True)
-        # --- 3. Report Balance and Finalize List ---
-        if contaminated_sample_count > non_contaminated_sample_count: samples_needed = contaminated_sample_count - non_contaminated_sample_count; logger.info(f"Dataset is unbalanced. Need ~{samples_needed} more non-contaminated samples for a 50/50 split.")
-        else: logger.info("Dataset is balanced or has sufficient non-contaminated samples.")
-        # De-duplicate and sort the final list
-        self.datasets = sorted(list(set(self.datasets)))
-        logger.info(f"Total projects to process (original + NFC): {len(self.datasets)}")
-        logger.info("--- NFC Facility Processing Finished ---")
+        if not getattr(self.config.nfc_facilities, 'fetch_nearby_samples', False) or self.nfc_facilities_df.empty: return
 
+        nearby_df = await self.nfc_handler.get_nearby_samples(fetcher=fetcher, task_id=task_id)
+        if not nearby_df.empty:
+            threshold = self.config.nfc_facilities.min_samples_per_study
+            counts_map = nearby_df.groupby('study_accession').size()
+            valid_proximal_projects = counts_map[counts_map >= threshold].index.tolist()
+            new_nfc_count = counts_map[valid_proximal_projects].sum()
+            self.ui_stats["nfc_samples"] = self.ui_stats.get("nfc_samples", 0) + new_nfc_count
+            self.ui_stats["total_samples_found"] += counts_map[valid_proximal_projects].sum()
+            self.datasets.extend([p for p in valid_proximal_projects if p not in self.datasets])
 
-    async def sort_datasets(self):
-        """Sorts datasets by sample count and filters invalid/small ones."""
-        logger.info("Validating and counting samples for each dataset...")
-        if not self.datasets: logger.warning("No datasets to process after initial loading and NFC check."); return
-        logger.info(f"Initial dataset count before validation: {len(self.datasets)}")
-        # Filter invalid dataset IDs 
-        MAX_ID_LENGTH = 100
-        original_count = len(self.datasets)
-        valid_datasets = []
-        for ds in self.datasets:
-            # Basic type/content validation (String, not empty, reasonable length, not JSON/list literal)
-            if (isinstance(ds, str) and ds.strip() and len(ds) < MAX_ID_LENGTH and not ds.strip().startswith(('[', '{'))):
-                valid_datasets.append(ds.strip()) # Clean whitespace
-            else: logger.warning(f"Filtering invalid dataset ID format: {ds!r}")
-        invalid_count = original_count - len(valid_datasets)
-        if invalid_count > 0: logger.info(f"Filtered {invalid_count} invalidly formatted dataset IDs.")
-        if not valid_datasets: logger.error("No valid dataset IDs remaining after format filtering."); self.datasets = []; return
-        self.datasets = valid_datasets
-        logger.info(f"Dataset count after format validation: {len(self.datasets)}")
-        # Use the correct CacheManager (EnaCacheManager) from the metadata sub-package
-        ena_cache_manager = EnaCacheManager(cache_dir=self.project_dir.cache / "ena_metadata")
-        results = []
-        # Use progress bar for counting
-        with get_progress_bar() as progress:
-            main_task = progress.add_task("Counting samples...", total=len(self.datasets))
-            for dataset_id in self.datasets:
-                progress.update(main_task, description=f"Counting {dataset_id}...")
-                # Determine dataset type (ENA or Manual) from info file or default to ENA
-                is_known_dataset = True
-                try: dataset_info = self._find_best_match(dataset_id); dataset_type = dataset_info.get('dataset_type', 'ENA').upper()
-                except ValueError: dataset_type = 'ENA'; is_known_dataset = False; logger.debug(f"Dataset '{dataset_id}' not in info file, assuming ENA type for counting.")
-                n_samples = -1 # Use -1 to indicate count not yet determined
-                if dataset_type == 'ENA':
-                    cache_key = f"metadata_{dataset_id}"
-                    cached_metadata_df = await ena_cache_manager.get(cache_key)
-                    # Fetch count from the cached metadata if available
-                    if cached_metadata_df is not None:
-                        if isinstance(cached_metadata_df, pd.DataFrame): n_samples = len(cached_metadata_df); logger.debug(f"Cache hit for {dataset_id} metadata: {n_samples} samples.")
-                        else: logger.warning(f"Unexpected data type in cache for {dataset_id} ({type(cached_metadata_df)}). Re-fetching count.")
-                    # Fetch count directly
-                    if n_samples == -1:
-                        try: n_samples = await get_n_samples_by_bioproject_async(bioproject_accession=dataset_id, email=self.config.credentials.ena_email, cache_manager=ena_cache_manager)
-                        except Exception as e: logger.error(f"Failed to count samples for ENA dataset {dataset_id}: {e}"); n_samples = 0 # Assume 0 if count fails
-                elif dataset_type == 'MANUAL':
-                    # We can't easily count samples for MANUAL here without loading files.
-                    # Assign a placeholder count (e.g., a large number or 0) and rely on the partitioner's minimum run threshold later. Using 0 for now.
-                    logger.info(f"Dataset '{dataset_id}' is MANUAL, skipping ENA sample count.")
-                    n_samples = 0 # Placeholder, actual check happens during partitioning
-                else:
-                    logger.warning(f"Unknown dataset type '{dataset_type}' for {dataset_id}. Assigning sample count 0.")
-                    n_samples = 0
-                results.append({'dataset_id': dataset_id, 'n_samples': n_samples, 'is_known': is_known_dataset})
-                progress.update(main_task, advance=1, description=f"Counted {dataset_id} ({n_samples if n_samples >= 0 else 'N/A'} samples)")
-        # Filter datasets with fewer than min_samples_threshold (only for ENA datasets)
-        min_samples_threshold = 5
-        filtered_results = []
-        skipped_count = 0
-        for item in results:
-            # Determine type again, defaulting to ENA if unknown during counting
-            dataset_type = 'ENA'
-            if item['is_known']:
-                try: dataset_type = self._find_best_match(item['dataset_id']).get('dataset_type', 'ENA').upper()
-                except ValueError: pass # Keep default ENA if lookup fails again
-            # Apply threshold only if ENA type and count was successful
-            if dataset_type == 'ENA' and item['n_samples'] < min_samples_threshold:
-                logger.info(f"Filtering out dataset '{item['dataset_id']}' (Type: ENA, Samples: {item['n_samples']} < {min_samples_threshold}).")
-                skipped_count += 1
-            else: filtered_results.append(item) # Keep MANUAL datasets and ENA datasets meeting threshold or with failed count (-1)
-        # Sort remaining datasets by sample count (ascending - smaller first)
-        self.datasets = [d['dataset_id'] for d in sorted(filtered_results, key=lambda x: x['n_samples'])]
-        if skipped_count > 0: logger.info(f"Removed {skipped_count} ENA datasets with fewer than {min_samples_threshold} samples.")
-        logger.info(f"Final sorted dataset order ({len(self.datasets)} datasets): {self.datasets}")
+        if task_id is not None: self.progress_obj.update(task_id, completed=490, description=f"[bold green]Sweep Complete")
 
-    async def process_datasets(self):
-        """Orchestrates the partitioning and processing of all valid datasets."""
-        if not self.datasets:  logger.warning("No datasets left to process after sorting/filtering."); return []
+    async def sort_datasets(self, sieve_task_id=None):
+        if not self.datasets:
+            return
 
-        # Use the correct CacheManager alias
-        ena_cache_manager = EnaCacheManager(cache_dir=self.project_dir.cache / "ena_metadata")
-        datasets_to_skip = ['PRJNA589635', 'PRJNA169373']
-        for i, dataset_id in enumerate(self.datasets):
-            if dataset_id in datasets_to_skip: continue
-            logger.info(f"\n{'='*10} Processing dataset {i+1}/{len(self.datasets)}: {dataset_id} {'='*10}")
+        cache_file = self.project_dir.cache / "valid_datasets_sieve.json"
+        
+        cached_ids = []
+        if cache_file.exists():
             try:
-                is_nfc_added_or_unknown = False
-                try: dataset_info = self._find_best_match(dataset_id)
-                except ValueError:
-                    logger.warning(f"Dataset '{dataset_id}' not found in info file; treating as new ENA dataset for processing.")
-                    dataset_info = pd.Series({
-                        'dataset_type': 'ENA',
-                        'ena_project_accession': dataset_id,
-                        'dataset_id': dataset_id,
-                        # Essential defaults expected by partitioner
-                        'description': 'N/A',
-                        'instrument_platform': 'N/A',
-                        'instrument_model': 'N/A',
-                        'library_layout': 'N/A',
-                    })
-                    is_nfc_added_or_unknown = True # Mark as newly added or unknown
+                with open(cache_file, 'r') as f:
+                    cached_ids = json.load(f)
+                self.logger.info(f"📂 Loaded {len(cached_ids)} projects from existing sieve cache.")
+            except Exception as e:
+                self.logger.error(f"Failed to read sieve cache: {e}")
 
-                local_config = copy.deepcopy(self.config)
-                # If newly added or unknown, force 'auto' mode for primer finding
-                if is_nfc_added_or_unknown:
-                    if local_config.sequences.pcr_primers.mode != 'auto':
-                        logger.info(f"Forcing 'auto' primer mode for unknown/new dataset: {dataset_id}")
-                        local_config.sequences.pcr_primers.mode = 'auto'
+        new_ids = [ds for ds in self.datasets if ds not in cached_ids]
 
-                # Instantiate the DatasetPartition class (handles internal processing)
-                partitioner = DatasetPartition(
-                    config=local_config,
-                    publication_fetcher=self.publication_fetcher,
-                    region_to_pairs_map=self.region_to_pairs_map,
-                    nfc_handler=self.nfc_handler,
-                    nfc_facilities_df=self.nfc_facilities_df
-                )
-                # Run the partitioner for the current dataset
-                # The partitioner internally handles fetching ENA metadata if needed
-                successful_h5ad_paths, failed_partitions = await partitioner.run(
-                    {dataset_id: dataset_info.to_dict()}, # Pass dataset info as dict
-                    ena_cache_manager=ena_cache_manager # Pass cache manager for ENA calls within partitioner
-                )
+        if not new_ids:
+            self.logger.info("📅 No new projects discovered. Proceeding with cached list.")
+            self.datasets = cached_ids
+            self.ui_stats["sieve_passed"] = len(self.datasets)
+            if sieve_task_id:
+                self.progress_obj.update(sieve_task_id, completed=len(self.datasets))
+            return
 
-                # --- Process Results ---
-                # Load successfully created AnnData objects
-                for h5ad_path in successful_h5ad_paths:
-                    try:
-                        adata = ad.read_h5ad(h5ad_path)
-                        # Optional: Add basic checks on loaded adata? (e.g., non-empty)
-                        if adata.n_obs > 0 and adata.n_vars > 0:
-                            self.data_objects.append(adata)
-                            subset_id = h5ad_path.stem # Get ID from filename
-                            self.processed_subsets.append(subset_id)
-                            logger.info(f"Successfully loaded AnnData object: {h5ad_path} ({adata.n_obs} obs x {adata.n_vars} vars)")
-                        else: raise ValueError(f"Loaded AnnData object is empty ({h5ad_path})")
+        self.logger.info(f"🆕 Found {len(new_ids)} new potential projects. Running validation...")
+        
+        n = max(1, self.config.sample_discovery.min_samples_per_study)
+        
+        counts_dict = await get_counts_bulk_async(
+            new_ids, 
+            self.config.credentials.ena_email, 
+            15, 
+            50, 
+            self.ena_cache_manager, 
+            self.progress_obj
+        )
 
-                    except Exception as e:
-                        subset_id = h5ad_path.stem; error_msg = f"Failed to load or validate generated AnnData object {h5ad_path}: {e}"
-                        logger.error(error_msg); self.failed_subsets.append((subset_id, error_msg))
+        valid_new = [ds_id for ds_id, count in counts_dict.items() if count >= n]
+        self.logger.info(f"✅ {len(valid_new)} of the new discoveries passed the sieve.")
 
-                # Record failures reported by the partitioner (can include dataset-level failures)
-                self.failed_subsets.extend([(f['dataset'], f['error']) for f in failed_partitions])
+        self.datasets = sorted(list(set(cached_ids + valid_new)))
 
-            except KeyError as e: error_msg = f"A required configuration or metadata column is missing: {e}. Check config and dataset info."; logger.error(f"Error processing dataset '{dataset_id}': {error_msg}"); self.failed_subsets.append((dataset_id, error_msg))
-            except Exception as dataset_error: logger.error(f"Unexpected error processing dataset '{dataset_id}': {dataset_error}", exc_info=True); self.failed_subsets.append((dataset_id, str(dataset_error)))
+        self.ui_stats["sieve_passed"] = len(self.datasets)
+        self.ui_stats["sieve_total"] = self.ui_stats.get("sieve_total", 0) + len(new_ids)
 
-        # Final report after processing all datasets
-        self._report()
-        return self.processed_subsets # Return list of successful subset IDs
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_file, 'w') as f:
+            json.dump(self.datasets, f, indent=4)
+        
+        self.logger.info(f"💾 Sieve cache updated. Total projects: {len(self.datasets)}")
 
-    def _find_best_match(self, dataset_id: str) -> pd.Series:
-        """Finds metadata record, prioritizing 'ENA' types if duplicates exist."""
-        # Normalize dataset_id for comparison
-        norm_id = dataset_id.strip().upper()
-        # Ensure required columns exist in self.datasets_info
-        required_cols = ['dataset_id', 'ena_project_accession', 'dataset_type']
-        missing_cols = [col for col in required_cols if col not in self.datasets_info.columns]
-        if missing_cols: raise ValueError(f"Dataset info file is missing required columns: {missing_cols}")
-        # Create boolean masks for matching IDs (case-insensitive, handle NA safely)
-        ena_acc_match = (self.datasets_info['ena_project_accession'].fillna('').str.upper() == norm_id)
-        dataset_id_match = (self.datasets_info['dataset_id'].fillna('').str.upper() == norm_id)
-        # Combine masks: match either ena_project_accession OR dataset_id
-        combined_match_mask = ena_acc_match | dataset_id_match
-        # Filter the DataFrame based on the combined mask
-        potential_matches = self.datasets_info[combined_match_mask].copy() # Use copy to avoid warnings on modification
-        if potential_matches.empty: raise ValueError(f"No metadata match found for dataset: '{dataset_id}' in the dataset info file.")
-        # Prioritize ENA type if multiple matches are found
-        potential_matches['dataset_type_upper'] = potential_matches['dataset_type'].fillna('ENA').str.upper() # Handle NA type
-        ena_matches = potential_matches[potential_matches['dataset_type_upper'] == 'ENA']
+    async def process_datasets(self, live_ui: Live):
+        if not self.datasets: return []
+        
+        metadata_task = self.progress_obj.add_task(OFFICIAL_TITLES["deep_metadata"], total=len(self.datasets))
+        qiime_task = self.progress_obj.add_task(OFFICIAL_TITLES["qiime2"], total=len(self.datasets))
 
-        if not ena_matches.empty: return ena_matches.iloc[0] # Return the first ENA match
-        else: return potential_matches.iloc[0] # If no ENA matches, return the first match of any other type (e.g., MANUAL)
+        batch_payload = {ds: {'dataset_type': 'ENA', 'ena_project_accession': ds, 'dataset_id': ds} 
+                         for ds in self.datasets if ds not in DATASETS_TO_SKIP}
 
+        partitioner = DatasetPartition(
+            config=self.config, ena_client=self.ena_client, publication_fetcher=self.publication_fetcher,
+            env_collector=self.env_collector, arkin_agents=self.arkin_agents, region_to_pairs_map=self.region_to_pairs_map, 
+            nfc_handler=self.nfc_handler, nfc_facilities_df=self.nfc_facilities_df, progress_obj=self.progress_obj
+        )
+        
+        LOAD_THRESHOLD = 85.0
+        if HAS_PSUTIL and psutil.cpu_percent(interval=None) > LOAD_THRESHOLD:
+            self.logger.warning(f"⚠️ High system load detected on '{get_computer_name()}'. Throttling parallel execution...")
+            await asyncio.sleep(10)
+        
+        successful_h5ad_paths, failed_partitions = await partitioner.run(
+            batch_payload, ena_cache_manager=self.ena_cache_manager, ui_stats_ref=self.ui_stats, 
+            metadata_task_id=metadata_task, qiime_task_id=qiime_task, ui_refresher=live_ui
+        )
+
+        self.ui_stats["success_h5ad"] = len(successful_h5ad_paths)
+        self.ui_stats["failed_h5ad"] = len(failed_partitions)
+        
+        for h5ad_path in successful_h5ad_paths:
+            try:
+                adata = ad.read_h5ad(h5ad_path, backed='r')
+                if adata.n_obs > 0:
+                    self.data_objects.append(adata)
+                    self.processed_subsets.append(h5ad_path.stem)
+            except Exception as e:
+                self.logger.error(f"Error loading final AnnData {h5ad_path.name}: {e}")
+
+        self.failed_subsets.extend([(f['dataset'], f['error']) for f in failed_partitions])
+        return self.processed_subsets
+    
     def _run_metaanalysis(self):
-        """Runs the final phylogenetic metaanalysis if enough subsets succeeded."""
-        if len(self.processed_subsets) < 2: logger.warning(f"Skipping metaanalysis: only {len(self.processed_subsets)} subset(s) processed successfully. Need >= 2."); return
-        logger.info(f"--- Starting Phylogenetic Meta-Analysis ({len(self.processed_subsets)} subsets) ---")
-        try: execute.phylogenetic_metaanalysis(app_config=self.config, project_dir=self.project_dir.processed_data); logger.info("--- Phylogenetic Meta-Analysis Completed Successfully ---")
-        except Exception as e: logger.error(f"Phylogenetic meta-analysis failed: {e}", exc_info=True)
+        if len(self.processed_subsets) < 2: return
+        try:
+            execute.phylogenetic_metaanalysis(app_config=self.config, project_dir=self.project_dir.processed_data)
+        except Exception as e:
+            self.logger.warning(f"Phylogenetic meta-analysis failed: {e}", exc_info=True)
 
     def _report(self):
-        """Logs a summary report of successful and failed subsets/datasets."""
-        n_success = len(self.processed_subsets)
-        # Count unique failed items (datasets or specific subsets)
-        unique_failed_items = set(item[0] for item in self.failed_subsets); n_failed = len(unique_failed_items)
-        logger.info(f"\n{'='*20} Workflow Summary {'='*20}\nSuccessfully processed subsets generated: {n_success}\nDatasets/Subsets with failures: {n_failed}")
+        summary = {
+            "datasets_total": len(self.datasets),
+            "datasets_processed": len(self.processed_subsets),
+            "datasets_failed": len(self.failed_subsets),
+            "h5ad_success": self.ui_stats.get("success_h5ad", 0),
+            "h5ad_failed": self.ui_stats.get("failed_h5ad", 0),
+        }
+        self.logger.info(f"Pipeline summary: {summary}")
+        return summary
+    
+    async def _perform_discovery(self, fetcher: ENAFetcher) -> List[str]:
+        self.logger.info("🔭 Starting semantic keyword expansion and OSM discovery...")
+        
+        semantic_ids = []
+        for env in self.config.sample_discovery.requested_environments:
+            self.logger.info(f"🔍 Searching keywords for: {env.name}...")
+            
+            search_fields = ["description", "study_title", "project_name"]
+            sub_queries = []
+            
+            for k in env.keywords:
+                clean_k = k.strip('"')
+                field_group = " OR ".join([f'{field}="{clean_k}"' for field in search_fields])
+                sub_queries.append(f"({field_group})")
+            
+            final_query = " OR ".join(sub_queries)
+            
+            try:
+                results = await self.ena_client.search_projects(final_query, limit=1000)
+                if results:
+                    semantic_ids.extend(results)
+                    self.logger.info(f"   ∟ Found {len(results)} projects for {env.name}")
+            except Exception as e:
+                self.logger.error(f"   ∟ ENA API rejected query for {env.name}: {e}")
+        
+        # Log unique semantic hits
+        self.ui_stats["semantic_samples"] = len(set(semantic_ids))
+        
+        # 2. OSM Geospatial Discovery
+        osm_ids = await self._perform_osm_discovery(fetcher)
+        self.ui_stats["osm_samples"] = len(set(osm_ids))
+        
+        all_new_ids = list(set(semantic_ids + osm_ids))
+        return all_new_ids
 
-        if self.processed_subsets:
-            logger.info("Successful subset IDs generated:")
-            # Sort for consistent reporting
-            for subset in sorted(self.processed_subsets): 
-                logger.info(f"  - {subset}")
+    async def _perform_osm_discovery(self, fetcher: ENAFetcher) -> List[str]:
+        if not self.config.sample_discovery.osm_features:
+            return []
 
-        if self.failed_subsets:
-            logger.info("Failure details:")
-            # Group errors by item ID for clarity
-            errors_by_item = {}
-            for item_id, error in self.failed_subsets:
-                if item_id not in errors_by_item: errors_by_item[item_id] = []
-                errors_by_item[item_id].append(error)
+        self.logger.info("🛰️ Querying OpenStreetMap via UniversalFacilityFetcher...")
+        osm_scout = UniversalFacilityFetcher()
+        raw_coords = []
 
-            for item_id in sorted(errors_by_item.keys()):
-                # Report each unique error message once per item
-                unique_errors = set(errors_by_item[item_id]); logger.info(f"  - Item '{item_id}':")
-                for error in unique_errors:
-                    # Truncate long error messages
-                    error_short = (str(error)[:200] + '...') if len(str(error)) > 200 else str(error); logger.info(f"    - {error_short}")
-        logger.info(f"{'='*60}\n")
+        for feature in self.config.sample_discovery.osm_features:
+            target_alias = getattr(feature, 'value', None) or getattr(feature, 'key', None)
+            if not target_alias and hasattr(feature, 'dict'):
+                f_dict = feature.dict()
+                target_alias = f_dict.get('value') or f_dict.get('key')
 
+            if target_alias not in osm_scout.FACILITY_TAGS:
+                self.logger.warning(f"  ⚠️ OSM alias '{target_alias}' not found. Skipping.")
+                continue
 
-# ==================================================================================== #
+            df_locations = await osm_scout.fetch_locations(target_alias)
+            if not df_locations.empty:
+                raw_coords.extend(df_locations[['latitude', 'longitude']].values.tolist())
+
+        if not raw_coords:
+            return []
+
+        unique_sweep_targets = {}
+        for lat, lon in raw_coords:
+            grid_key = (round(lat, 2), round(lon, 2))
+            if grid_key not in unique_sweep_targets:
+                unique_sweep_targets[grid_key] = (lat, lon)
+
+        self.logger.info(f"🎯 Filtered {len(raw_coords)} hits to {len(unique_sweep_targets)} unique sweep zones.")
+
+        osm_project_ids = []
+        for _, (lat, lon) in unique_sweep_targets.items():
+            try:
+                nearby = await fetcher.find_samples_near(lat=lat, lon=lon, radius_km=10)
+                if not nearby.empty and 'study_accession' in nearby.columns:
+                    osm_project_ids.extend(nearby['study_accession'].unique())
+            except Exception as e:
+                self.logger.warning(f"OSM proximity lookup failed at ({lat}, {lon}): {e}")
+                continue 
+
+        return list(set(osm_project_ids))
+
+    def _apply_primer_restriction(self, predicted_region: str) -> bool: return True
+
+    def _append_to_live_report(self, dataset_id, status, subsets, error=""):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        msg = f"[{timestamp}] [{status}] {dataset_id} (subsets={subsets})"
+        if error:
+            msg = f"{msg} | error={error}"
+        self.ui_stats["current_action"] = status
+        if error:
+            self.logger.error(msg)
+        else:
+            self.logger.info(msg)
+
+    def _find_best_match(self, dataset_id: str) -> pd.Series:
+        normalized = str(dataset_id).strip().upper()
+        direct = self._lookup_dict.get(normalized)
+        if direct is not None:
+            return direct if isinstance(direct, pd.Series) else pd.Series(direct)
+
+        if self.datasets_info.empty:
+            return pd.Series(dtype=object)
+
+        id_col = self.datasets_info.get("dataset_id", pd.Series(dtype=str)).astype(str).str.upper()
+        ena_col = self.datasets_info.get("ena_project_accession", pd.Series(dtype=str)).astype(str).str.upper()
+        exact = self.datasets_info[(id_col == normalized) | (ena_col == normalized)]
+        if not exact.empty:
+            return exact.iloc[0]
+
+        contains = self.datasets_info[
+            id_col.str.contains(normalized, na=False) | ena_col.str.contains(normalized, na=False)
+        ]
+        if not contains.empty:
+            return contains.iloc[0]
+
+        return pd.Series(dtype=object)
+
+    def _probebase_setup(self):
+        primer_db = getattr(self.config.paths, "primer_db", None)
+        if not primer_db:
+            self.logger.warning("No primer_db path configured; skipping probebase setup.")
+            return
+
+        try:
+            primer_db_path = Path(primer_db)
+        except TypeError:
+            self.logger.warning("Configured primer_db path is invalid; skipping probebase setup.")
+            return
+        if primer_db_path.exists():
+            return
+
+        primer_db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.logger.info(f"Primer DB not found at {primer_db_path}. Attempting automatic setup...")
+        try:
+            import_and_save_database(db_path=primer_db_path)
+        except TypeError:
+            # Backward compatibility for function signatures that do not accept db_path.
+            import_and_save_database()
+        except Exception as e:
+            self.logger.warning(f"Probebase setup failed: {e}", exc_info=True)
+
+    def _initialize_publication_fetcher(self) -> PublicationFetcher: return self.publication_fetcher
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run the 16S rRNA upstream analysis pipeline.")
-    parser.add_argument(
-        "-c", "--config", type=Path,
-        # Default relative path assumes execution from a specific directory structure
-        default=Path("/usr2/people/macgregor/amplicon/workflow_16s/config/config.yaml"),
-        help="Path to the YAML configuration file for the workflow."
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-c", "--config", type=Path, default=Path("/auto/sahara/namib/home/macgregor/amplicon/workflow_16s/config/config.yaml"))
     args = parser.parse_args()
-
-    # Basic logging setup initially to catch early errors
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] %(levelname)-8s %(name)s: %(message)s", # Added logger name
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
-    # Get logger instance after basicConfig
-    logger = get_logger() # Use a specific name
-
-    config_path = args.config
-    try:
-        # --- Configuration Loading and Validation ---
-        logger.info(f"Loading configuration from: {config_path.resolve()}")
-        if not config_path.is_file(): raise FileNotFoundError(f"Config file not found at '{config_path.resolve()}'")
-        with open(config_path, 'r') as f: config_dict = yaml.safe_load(f)
-        config = AppConfig(**config_dict)
-        logger.info("Configuration loaded and validated successfully.")
-        # --- Project Directory Setup ---
-        project_dir = Project(config)
-        logger.info(f"Project directory set to: {project_dir.main.resolve()}")
-        # --- Reconfigure Logging based on Config ---
-        logger_path = setup_logging(log_dir_path=project_dir.logs) # Use project_dir.logs
-    # --- Error Handling for Setup ---
-    except FileNotFoundError as e: logger.critical(str(e)); exit(1)
-    except ValidationError as e: logger.critical(f"Configuration file '{config_path.resolve()}' is invalid:\n{e}"); exit(1)
-    except Exception as e: logger.critical(f"An error occurred during initialization: {e}", exc_info=True); exit(1)
-    # --- Workflow Execution ---
-    try:
-        logger.info("Instantiating Upstream workflow processor...")
-        datasets_processor = Upstream(config)
-        logger.info("Starting workflow execution...")
-        # Run the main async execute method
-        asyncio.run(datasets_processor.execute())
-        logger.info("Workflow execution finished successfully.") # Log success
-    except ValueError as e: logger.critical(f"Workflow setup failed: {e}"); exit(1)
-    except RuntimeError as e: logger.critical(f"Workflow runtime error: {e}"); exit(1)
-    except Exception as e: logger.critical(f"Workflow execution failed with an unexpected error: {e}", exc_info=True); exit(1)
+    with open(args.config, 'r') as f: 
+        config = AppConfig(**yaml.safe_load(f))
+        
+    setup_logging(log_dir_path=Project(config).logs) 
+    
+    asyncio.run(Upstream(config).execute())

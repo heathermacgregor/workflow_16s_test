@@ -1,9 +1,7 @@
-# ==================================================================================== #
+# workflow_16s/utils/taxonomy.py
 
-# Standard Imports
 from __future__ import annotations
 import io
-import logging
 import re
 import zipfile
 from functools import lru_cache
@@ -11,16 +9,12 @@ from pathlib import Path
 from typing import Dict, List, Union, Tuple
 from urllib.parse import urljoin
 
-# Third-Party Imports
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd # Added for type hint fix
 
-# ==================================================================================== #
+from workflow_16s.utils.logger import get_logger
 
-logger = logging.getLogger("workflow_16s") # Use specific logger name
-
-# ==================================================================================== #
 
 class FaprotaxError(Exception):
     """Base exception for FaprotaxDB errors."""
@@ -31,7 +25,6 @@ class DownloaderError(FaprotaxError):
 class ParserError(FaprotaxError):
     """Raised during database file parsing."""
 
-# ==================================================================================== #
 class FaprotaxDB:
     """
     A class to manage and query the FAPROTAX functional annotation database.
@@ -41,7 +34,9 @@ class FaprotaxDB:
     """
     BASE_URL = "https://pages.uoregon.edu/slouca/LoucaLab/archive/FAPROTAX/lib/php/index.php?section=Download"
     def __init__(
-        self, db_path: Union[str, Path, None] = None, project_name: str = "workflow_16s"
+        self, 
+        db_path: Union[str, Path, None] = None, 
+        project_name: str = "workflow_16s"
     ):
         """Initializes the FaprotaxDB instance.
 
@@ -53,7 +48,8 @@ class FaprotaxDB:
         else: self.db_dir = self._find_references_dir(project_name) / "faprotax"
         self.db_file = self.db_dir / "FAPROTAX.txt"
         self._db_data = None # Lazy-loaded database content
-        logger.info(f"FAPROTAX DB directory set to: {self.db_dir}")
+        self.logger = get_logger("workflow_16s")
+        self.logger.info(f"FAPROTAX DB directory set to: {self.db_dir}")
 
     @property
     def data(self) -> Dict:
@@ -71,7 +67,7 @@ class FaprotaxDB:
             if src_project_dir.is_dir():
                 ref_dir = src_project_dir.parent.parent / "references" # Go up two levels from src
                 if ref_dir.is_dir():
-                    logger.debug(f"Found references dir via src structure: {ref_dir}")
+                    get_logger("workflow_16s").debug(f"Found references dir via src structure: {ref_dir}")
                     return ref_dir
 
             # Check if '<project_name>' directory exists directly
@@ -79,17 +75,17 @@ class FaprotaxDB:
             if project_dir.is_dir():
                 ref_dir = project_dir.parent / "references" # Go up one level
                 if ref_dir.is_dir():
-                    logger.debug(f"Found references dir via direct project structure: {ref_dir}")
+                    get_logger("workflow_16s").debug(f"Found references dir via direct project structure: {ref_dir}")
                     return ref_dir
 
         # Fallback if specific project structure not found
         fallback_dir = Path.home() / ".cache" / project_name / "references"
-        logger.warning(f"Could not find '{project_name}/references' structure. Using fallback cache: {fallback_dir}")
+        get_logger("workflow_16s").warning(f"Could not find '{project_name}/references' structure. Using fallback cache: {fallback_dir}")
         return fallback_dir
 
     def _download_latest(self) -> Path:
         """Scrapes, downloads, and extracts the latest FAPROTAX.txt file."""
-        logger.info("Searching for the latest FAPROTAX database download link...")
+        self.logger.info("Searching for the latest FAPROTAX database download link...")
         try:
             response = requests.get(self.BASE_URL, timeout=30)
             response.raise_for_status()
@@ -113,7 +109,7 @@ class FaprotaxDB:
             links.sort(key=lambda x: tuple(map(int, x[1].split('.'))), reverse=True)
             zip_url, version = links[0]
 
-            logger.info(f"Downloading FAPROTAX v{version} from {zip_url}")
+            self.logger.info(f"Downloading FAPROTAX v{version} from {zip_url}")
             # Use streaming for potentially large files
             with requests.get(zip_url, timeout=120, stream=True) as r:
                 r.raise_for_status()
@@ -132,7 +128,7 @@ class FaprotaxDB:
                 with zf.open(target_member) as source, open(self.db_file, "wb") as target:
                     target.write(source.read())
 
-                logger.info(f"Successfully saved FAPROTAX.txt to {self.db_file}")
+                self.logger.info(f"Successfully saved FAPROTAX.txt to {self.db_file}")
 
         except requests.RequestException as e:
             raise DownloaderError(f"Network error while downloading: {e}") from e
@@ -149,10 +145,10 @@ class FaprotaxDB:
             try:
                 self._download_latest()
             except DownloaderError as e:
-                logger.error(f"Failed to download FAPROTAX DB: {e}")
+                self.logger.error(f"Failed to download FAPROTAX DB: {e}")
                 return {} # Return empty dict if download fails
 
-        logger.info(f"Parsing FAPROTAX database from {self.db_file}...")
+        self.logger.info(f"Parsing FAPROTAX database from {self.db_file}...")
         trait_dict = {}
         current_trait = None
 
@@ -182,19 +178,23 @@ class FaprotaxDB:
                                 "reference": fields[1].strip() if len(fields) > 1 else ""
                             })
                         except re.error as e:
-                            logger.warning(f"Skipping invalid regex pattern for trait '{current_trait}': '{regex_str}' ({e})")
+                            self.logger.warning(f"Skipping invalid regex pattern for trait '{current_trait}': '{regex_str}' ({e})")
         except FileNotFoundError:
-            logger.error(f"FAPROTAX file not found at {self.db_file} even after download attempt.")
+            self.logger.error(f"FAPROTAX file not found at {self.db_file} even after download attempt.")
             return {}
         except Exception as e:
             raise ParserError(f"Error parsing {self.db_file}: {e}") from e
 
         # Filter out traits that ended up with no valid patterns
         parsed_data = {t: d for t, d in trait_dict.items() if d.get("taxa")}
-        logger.info(f"Parsed {len(parsed_data)} functional groups from FAPROTAX.")
+        self.logger.info(f"Parsed {len(parsed_data)} functional groups from FAPROTAX.")
         return parsed_data
 
-    def predict_functions(self, taxonomy: Union[str, float], include_references: bool = False) -> Union[List[str], Dict[str, List[str]]]: # Allow float for potential NaN
+    def predict_functions(
+        self, 
+        taxonomy: Union[str, float], 
+        include_references: bool = False
+    ) -> Union[List[str], Dict[str, List[str]]]: # Allow float for potential NaN
         """Finds all FAPROTAX functions for a given taxonomy string."""
         if not taxonomy or pd.isna(taxonomy): # Handle empty/NaN input
             return {} if include_references else []

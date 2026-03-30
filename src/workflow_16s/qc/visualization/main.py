@@ -3,6 +3,8 @@ QC Visualization and Interpretation Module
 
 Creates publication-ready visualizations that integrate QC results
 with downstream analysis to show QC impact and data quality.
+
+Uses a custom 'heather' Plotly template for consistent, professional aesthetic.
 """
 
 import logging
@@ -15,6 +17,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
+import plotly.io as pio
 
 try:
     import anndata as ad
@@ -23,6 +26,71 @@ except ImportError:
     ANNDATA_AVAILABLE = False
 
 logger = logging.getLogger('workflow_16s')
+
+
+# ==================================================================================== #
+# CUSTOM HEATHER TEMPLATE - Soft, professional aesthetic for QC visualizations
+# ==================================================================================== #
+
+def register_heather_template():
+    """Register the custom 'heather' Plotly template."""
+    heather = go.layout.Template(
+        layout=go.Layout(
+            # Color scheme: Soft purples, greys, and earth tones
+            colorway=[
+                '#8B7BA4',  # Soft purple (primary)
+                '#A89CC4',  # Light purple
+                '#C4B8D1',  # Pale heather
+                '#6B6B7A',  # Steel grey
+                '#9A8E99',  # Taupe
+                '#7A9E8F',  # Soft sage
+                '#B8A89C',  # Warm grey
+            ],
+            # Background and font
+            paper_bgcolor='#FAFAF9',  # Off-white
+            plot_bgcolor='#FFFFFF',   # White plotting area
+            font=dict(family="Arial, sans-serif", size=12, color='#3D3D3D'),
+            title=dict(font=dict(size=18, color='#2D2D2D', family='Arial, sans-serif')),
+            xaxis=dict(
+                showgrid=True,
+                gridwidth=1,
+                gridcolor='#E8E8E6',
+                showline=True,
+                linewidth=1,
+                linecolor='#9A9A99',
+                title=dict(font=dict(size=13, color='#3D3D3D'))
+            ),
+            yaxis=dict(
+                showgrid=True,
+                gridwidth=1,
+                gridcolor='#E8E8E6',
+                showline=True,
+                linewidth=1,
+                linecolor='#9A9A99',
+                title=dict(font=dict(size=13, color='#3D3D3D'))
+            ),
+            legend=dict(
+                bgcolor='rgba(255, 255, 255, 0.8)',
+                bordercolor='#9A9A99',
+                borderwidth=1,
+                font=dict(size=11, color='#3D3D3D')
+            ),
+            hoverlabel=dict(
+                bgcolor='#FAFAF9',
+                font=dict(size=12, family='Arial, sans-serif', color='#3D3D3D'),
+                bordercolor='#8B7BA4'
+            )
+        )
+    )
+    pio.templates['heather'] = heather
+    return heather
+
+
+# Register template on module load
+try:
+    register_heather_template()
+except Exception as e:
+    logger.warning(f"Failed to register heather template: {e}")
 
 
 def create_qc_impact_dashboard(
@@ -34,6 +102,8 @@ def create_qc_impact_dashboard(
     """
     Create comprehensive dashboard showing QC impact on analysis.
     
+    Uses the 'heather' template for professional, publication-ready aesthetic.
+    
     Args:
         adata_before: AnnData before QC (optional)
         adata_after: AnnData after QC
@@ -43,40 +113,50 @@ def create_qc_impact_dashboard(
     Returns:
         Plotly figure object
     """
-    # Create 2x3 subplot grid
+    # Define QC status colors (heather-friendly palette)
+    qc_colors = {
+        'PASS': '#7A9E8F',      # Soft sage (pass)
+        'WARNING': '#C9A876',   # Warm amber (warning)
+        'FAIL': '#A85A5A'       # Soft red (failure)
+    }
+    
+    # Create 3x2 subplot grid
     fig = make_subplots(
         rows=3, cols=2,
         subplot_titles=(
-            '① Sample QC Flags Distribution',
-            '② Contamination Detection',
-            '③ Metadata Quality Improvement',
-            '④ Alpha Diversity by QC Status',
-            '⑤ PCA Colored by QC Flags',
-            '⑥ Feature-Level QC Summary'
+            '<b>① QC Flags Distribution</b>',
+            '<b>② Contamination Detection</b>',
+            '<b>③ Metadata Quality</b>',
+            '<b>④ Alpha Diversity by QC</b>',
+            '<b>⑤ PCA Colored by QC</b>',
+            '<b>⑥ Feature Summary</b>'
         ),
         specs=[
             [{'type': 'bar'}, {'type': 'scatter'}],
             [{'type': 'bar'}, {'type': 'box'}],
             [{'type': 'scatter'}, {'type': 'bar'}]
         ],
-        vertical_spacing=0.12,
-        horizontal_spacing=0.12
+        vertical_spacing=0.14,
+        horizontal_spacing=0.14
     )
     
     # ===== Plot 1: QC Flags Distribution =====
     if 'qc_overall_flag' in adata_after.obs.columns:
         flag_counts = adata_after.obs['qc_overall_flag'].value_counts()
         
-        colors = {'PASS': '#2ecc71', 'WARNING': '#f39c12', 'FAIL': '#e74c3c'}
-        
         fig.add_trace(
             go.Bar(
                 x=flag_counts.index,
                 y=flag_counts.values,
-                marker=dict(color=[colors.get(f, '#95a5a6') for f in flag_counts.index]),
+                marker=dict(
+                    color=[qc_colors.get(f, '#9A9A99') for f in flag_counts.index],
+                    line=dict(color='#6B6B7A', width=1.5)
+                ),
                 text=flag_counts.values,
-                textposition='auto',
-                name='QC Flags'
+                textposition='outside',
+                name='QC Status',
+                hovertemplate='<b>%{x}</b><br>Count: %{y}<extra></extra>',
+                showlegend=False
             ),
             row=1, col=1
         )
@@ -88,25 +168,27 @@ def create_qc_impact_dashboard(
         else:
             contam_scores = adata_after.var['is_contaminant'].astype(float)
         
-        # Histogram of contamination scores
         fig.add_trace(
             go.Histogram(
                 x=contam_scores,
                 nbinsx=50,
-                marker=dict(color='#e74c3c', opacity=0.7),
+                marker=dict(color='#8B7BA4', line=dict(color='#6B6B7A', width=0.5)),
                 name='Contamination Score',
+                hovertemplate='Score: %{x:.2f}<br>Frequency: %{y}<extra></extra>',
                 showlegend=False
             ),
             row=1, col=2
         )
         
-        # Add threshold line if available
+        # Add threshold line
         threshold = qc_results.get('contamination_threshold', 0.5)
         fig.add_vline(
             x=threshold,
             line_dash="dash",
-            line_color="black",
-            annotation_text=f"Threshold: {threshold}",
+            line_color='#A85A5A',
+            line_width=2,
+            annotation_text=f"<b>Threshold: {threshold:.2f}</b>",
+            annotation_position="top right",
             row=1, col=2
         )
     
@@ -116,15 +198,21 @@ def create_qc_impact_dashboard(
         
         if not report.empty and 'level' in report.columns:
             level_counts = report['level'].value_counts()
+            qual_colors = {'info': '#7A9E8F', 'warning': '#C9A876', 'error': '#A85A5A'}
             
             fig.add_trace(
                 go.Bar(
                     x=level_counts.index,
                     y=level_counts.values,
-                    marker=dict(color=['#2ecc71', '#f39c12', '#e74c3c']),
+                    marker=dict(
+                        color=[qual_colors.get(str(idx).lower(), '#9A9A99') for idx in level_counts.index],
+                        line=dict(color='#6B6B7A', width=1.5)
+                    ),
                     text=level_counts.values,
-                    textposition='auto',
-                    name='Validation Issues'
+                    textposition='outside',
+                    name='Quality Issues',
+                    hovertemplate='<b>%{x}</b><br>Count: %{y}<extra></extra>',
+                    showlegend=False
                 ),
                 row=2, col=1
             )
@@ -140,8 +228,9 @@ def create_qc_impact_dashboard(
                     go.Box(
                         y=values,
                         name=flag,
-                        marker=dict(color=colors.get(flag, '#95a5a6')),
-                        boxmean='sd'
+                        marker=dict(color=qc_colors.get(flag, '#9A9A99')),
+                        boxmean='sd',
+                        hovertemplate='<b>%{fullData.name}</b><br>Shannon: %{y:.2f}<extra></extra>'
                     ),
                     row=2, col=2
                 )
@@ -161,73 +250,86 @@ def create_qc_impact_dashboard(
                         mode='markers',
                         name=flag,
                         marker=dict(
-                            size=8,
-                            color=colors.get(flag, '#95a5a6'),
-                            opacity=0.7,
+                            size=7,
+                            color=qc_colors.get(flag, '#9A9A99'),
+                            opacity=0.75,
                             line=dict(width=0.5, color='white')
-                        )
+                        ),
+                        hovertemplate='<b>%{fullData.name}</b><br>PC1: %{x:.2f}<br>PC2: %{y:.2f}<extra></extra>'
                     ),
                     row=3, col=1
                 )
     
     # ===== Plot 6: Feature Summary =====
     feature_summary = []
-    
     total_features = adata_after.n_vars
-    feature_summary.append(('Total Features', total_features))
+    feature_summary.append(('Total', total_features))
     
     if 'is_contaminant' in adata_after.var.columns:
         n_contam = adata_after.var['is_contaminant'].sum()
         feature_summary.append(('Contaminants', n_contam))
-        feature_summary.append(('Clean Features', total_features - n_contam))
+        feature_summary.append(('Clean', total_features - n_contam))
     
     if feature_summary:
         labels, values = zip(*feature_summary)
+        feat_colors = ['#8B7BA4', '#A85A5A', '#7A9E8F']
         
         fig.add_trace(
             go.Bar(
                 x=list(labels),
                 y=list(values),
-                marker=dict(color=['#3498db', '#e74c3c', '#2ecc71']),
+                marker=dict(
+                    color=feat_colors[:len(labels)],
+                    line=dict(color='#6B6B7A', width=1.5)
+                ),
                 text=list(values),
-                textposition='auto'
+                textposition='outside',
+                name='Features',
+                hovertemplate='<b>%{x}</b><br>Count: %{y}<extra></extra>',
+                showlegend=False
             ),
             row=3, col=2
         )
     
-    # Update layout
+    # Update layout with heather template
     fig.update_layout(
         title=dict(
             text="<b>QC Impact Dashboard</b>",
             x=0.5,
             xanchor='center',
-            font=dict(size=20)
+            font=dict(size=22, color='#2D2D2D', family='Arial, sans-serif')
         ),
-        height=1200,
-        width=1400,
+        height=1300,
+        width=1500,
         showlegend=True,
-        template='plotly_white'
+        template='heather',
+        hovermode='closest',
+        margin=dict(l=80, r=80, t=120, b=80)
     )
     
     # Update axes labels
-    fig.update_xaxes(title_text="QC Flag", row=1, col=1)
-    fig.update_yaxes(title_text="Count", row=1, col=1)
+    fig.update_xaxes(title_text="<b>QC Flag</b>", row=1, col=1)
+    fig.update_yaxes(title_text="<b>Count</b>", row=1, col=1)
     
-    fig.update_xaxes(title_text="Contamination Score", row=1, col=2)
-    fig.update_yaxes(title_text="Frequency", row=1, col=2)
+    fig.update_xaxes(title_text="<b>Contamination Score</b>", row=1, col=2)
+    fig.update_yaxes(title_text="<b>Frequency</b>", row=1, col=2)
     
-    fig.update_xaxes(title_text="Validation Level", row=2, col=1)
-    fig.update_yaxes(title_text="Issues Found", row=2, col=1)
+    fig.update_xaxes(title_text="<b>Quality Level</b>", row=2, col=1)
+    fig.update_yaxes(title_text="<b>Count</b>", row=2, col=1)
     
-    fig.update_yaxes(title_text="Shannon Diversity", row=2, col=2)
+    fig.update_yaxes(title_text="<b>Shannon Index</b>", row=2, col=2)
     
-    fig.update_xaxes(title_text="PC1", row=3, col=1)
-    fig.update_yaxes(title_text="PC2", row=3, col=1)
+    fig.update_xaxes(title_text="<b>PC1</b>", row=3, col=1)
+    fig.update_yaxes(title_text="<b>PC2</b>", row=3, col=1)
+    
+    fig.update_xaxes(title_text="<b>Feature Category</b>", row=3, col=2)
+    fig.update_yaxes(title_text="<b>Count</b>", row=3, col=2)
     
     # Save
     output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(str(output_path))
-    logger.info(f"QC dashboard saved to: {output_path}")
+    logger.info(f"✅ QC dashboard saved to: {output_path}")
     
     return fig
 
@@ -397,6 +499,7 @@ def plot_qc_metrics_over_sequencing_depth(
     Plot how QC metrics relate to sequencing depth.
     
     Shows whether QC failures are associated with low coverage.
+    Uses the 'heather' template for consistent styling.
     
     Args:
         adata: AnnData with QC annotations
@@ -415,9 +518,14 @@ def plot_qc_metrics_over_sequencing_depth(
     
     fig = go.Figure()
     
+    # QC status colors (heather palette)
+    qc_colors = {
+        'PASS': '#7A9E8F',
+        'WARNING': '#C9A876',
+        'FAIL': '#A85A5A'
+    }
+    
     if 'qc_overall_flag' in adata.obs.columns:
-        colors = {'PASS': '#2ecc71', 'WARNING': '#f39c12', 'FAIL': '#e74c3c'}
-        
         for flag in ['PASS', 'WARNING', 'FAIL']:
             mask = adata.obs['qc_overall_flag'] == flag
             if mask.sum() > 0:
@@ -426,25 +534,38 @@ def plot_qc_metrics_over_sequencing_depth(
                 fig.add_trace(go.Histogram(
                     x=depths,
                     name=flag,
-                    marker=dict(color=colors[flag], opacity=0.7),
-                    nbinsx=50
+                    marker=dict(
+                        color=qc_colors[flag],
+                        opacity=0.7,
+                        line=dict(color='#6B6B7A', width=0.5)
+                    ),
+                    nbinsx=50,
+                    hovertemplate='<b>%{fullData.name}</b><br>Reads: %{x:.0f}<br>Count: %{y}<extra></extra>'
                 ))
     
     fig.update_layout(
-        title="Sequencing Depth Distribution by QC Status",
-        xaxis_title="Total Reads per Sample (log10 scale)",
+        title=dict(
+            text="<b>Sequencing Depth Distribution by QC Status</b>",
+            x=0.5,
+            xanchor='center',
+            font=dict(size=18, color='#2D2D2D')
+        ),
+        xaxis_title="<b>Total Reads per Sample</b>",
         xaxis_type="log",
-        yaxis_title="Number of Samples",
+        yaxis_title="<b>Number of Samples</b>",
         barmode='overlay',
-        template='plotly_white',
-        height=500,
-        width=800
+        template='heather',
+        height=600,
+        width=900,
+        hovermode='x unified',
+        margin=dict(l=80, r=60, t=100, b=80)
     )
     
     # Save
     output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(str(output_path))
-    logger.info(f"QC depth plot saved to: {output_path}")
+    logger.info(f"✅ QC depth plot saved to: {output_path}")
     
     return fig
 
@@ -456,6 +577,8 @@ def create_sample_qc_heatmap(
 ) -> go.Figure:
     """
     Create heatmap showing QC status across multiple metrics.
+    
+    Uses the 'heather' template for professional visualization.
     
     Args:
         adata: AnnData with QC columns in obs
@@ -492,28 +615,48 @@ def create_sample_qc_heatmap(
     qc_matrix = qc_matrix.sort_values('n_flags', ascending=False)
     qc_matrix = qc_matrix.drop('n_flags', axis=1)
     
+    # Create heatmap with heather color scale
     fig = go.Figure(data=go.Heatmap(
         z=qc_matrix.T.values,
         x=qc_matrix.index,
         y=qc_matrix.columns,
-        colorscale=[[0, '#2ecc71'], [0.5, '#f39c12'], [1, '#e74c3c']],
-        colorbar=dict(title="QC Flag"),
+        colorscale=[
+            [0.0, '#7A9E8F'],    # Pass: soft sage
+            [0.5, '#C9A876'],    # Warning: warm amber
+            [1.0, '#A85A5A']     # Fail: soft red
+        ],
+        colorbar=dict(
+            title="<b>QC Status</b>",
+            thickness=15,
+            len=0.7,
+            x=1.02,
+            tickvals=[0, 0.5, 1.0],
+            ticktext=['Pass', 'Warning', 'Fail']
+        ),
         hoverongaps=False,
-        hovertemplate='Sample: %{x}<br>Metric: %{y}<br>Status: %{z}<extra></extra>'
+        hovertemplate='<b>Sample:</b> %{x}<br><b>Metric:</b> %{y}<br><b>Status:</b> %{z:.2f}<extra></extra>'
     ))
     
     fig.update_layout(
-        title="Sample-Level QC Heatmap",
-        xaxis_title="Samples (sorted by QC flags)",
-        yaxis_title="QC Metrics",
-        height=400 + len(qc_columns) * 20,
-        width=1000,
-        template='plotly_white'
+        title=dict(
+            text="<b>Sample-Level QC Heatmap</b>",
+            x=0.5,
+            xanchor='center',
+            font=dict(size=18, color='#2D2D2D')
+        ),
+        xaxis_title="<b>Samples (sorted by failure count)</b>",
+        yaxis_title="<b>QC Metrics</b>",
+        height=400 + len(qc_columns) * 25,
+        width=1200,
+        template='heather',
+        hovermode='closest',
+        margin=dict(l=120, r=100, t=100, b=100)
     )
     
     if output_path:
         output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         fig.write_html(str(output_path))
-        logger.info(f"QC heatmap saved to: {output_path}")
+        logger.info(f"✅ QC heatmap saved to: {output_path}")
     
     return fig

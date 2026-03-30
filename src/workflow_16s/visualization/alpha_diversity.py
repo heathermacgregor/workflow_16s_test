@@ -88,10 +88,7 @@ def create_alpha_diversity_boxplot(
                 font=dict(size=16)
             )
 
-        save_fig(fig, output_dir / f"alpha_boxplot_{metric}", formats=['html', 'json', 'png'])
-        return fig
-
-    except Exception as e:
+        save_fig(fig, output_dir / f"alpha_boxplot_{metric}", formats=['html', 'json', 'png'], verbose=False)
         logger.error(f"Failed to create boxplot for {metric}: {e}")
         return go.Figure()
 
@@ -127,7 +124,7 @@ def create_alpha_diversity_stats_plot(
     fig.add_hline(y=-np.log10(0.05), line_dash="dash", annotation_text="p=0.05",
                   annotation_position="bottom right", line_color="red")
     
-    save_fig(fig, output_dir / "alpha_stats_summary", formats=['html', 'json', 'png'])
+    save_fig(fig, output_dir / "alpha_stats_summary", formats=['html', 'json', 'png'], verbose=False)
     return fig
 
 
@@ -165,6 +162,6 @@ def plot_alpha_correlations(
         )
         fig = apply_common_layout(fig, "Metadata Variable", "Association Strength (|ρ| or η²)", f"Top {top_n} Associations with {metric.replace('_', ' ').title()}")
         figs[metric] = fig
-        save_fig(fig, output_dir / f"alpha_correlation_{metric}", formats=['html', 'json', 'png'])
+        save_fig(fig, output_dir / f"alpha_correlation_{metric}", formats=['html', 'json', 'png'], verbose=False)
 
     return figs

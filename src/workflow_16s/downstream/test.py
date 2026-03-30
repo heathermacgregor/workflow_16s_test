@@ -1,42 +1,36 @@
-#!/usr/bin/env python
-
+# workflow_16s/downstream/test.py
 """
 Main executable script for 16S downstream analysis workflow.
 """
 
-# ==================================================================================== #
 
 import os
-import sys
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
-import logging
+import sys
 from pathlib import Path
-import argparse
-import asyncio  # Required for async main
-import pandas as pd  # Required for empty DataFrame
 
 try:
-    from workflow_16s.utils.logger import initialize_logging
-    from workflow_16s.config_schema import load_config
-    from workflow_16s.api.nuclear_fuel_cycle.nfc import NFCFacilitiesHandler
+    from workflow_16s.utils.logger import initialize_logging, get_logger
+    # This sets the environment variable and silences rpy2 BEFORE the waterfall starts
+    LOG_DIR = Path("/usr2/people/macgregor/amplicon/project_01/07_logs")
+    LOG_DIR.mkdir(exist_ok=True, parents=True)
+    initialize_logging(LOG_DIR)
 except ImportError as e:
     print(f"Error importing workflow modules: {e}", file=sys.stderr)
     print("Ensure the 'workflow_16s' package is installed correctly.", file=sys.stderr)
     sys.exit(1)
     
-# ==================================================================================== #
-
+import argparse
+import asyncio  # Required for async main
+import pandas as pd  # Required for empty DataFrame
 import threading
-import time
 import psutil
-import os
-import logging
-
-
+import platform
+import getpass
 
 def parse_arguments():
     """Parse command line arguments."""
@@ -55,15 +49,15 @@ def parse_arguments():
     parser.add_argument(
         "--output_dir", 
         type=Path, 
-        default=Path("/usr2/people/macgregor/amplicon/project_01/04_analysis/testing_5"),
+        default=Path("/usr2/people/macgregor/amplicon/project_01/04_analysis/testing_20260212"),
         help="Output directory for results"
     )
     
     parser.add_argument(
         "--config", 
         type=Path,
-        default=Path("/usr2/people/macgregor/amplicon/workflow_16s/config/config.yaml"),
-        help="Path to configuration file (optional)"
+        default=None,
+        help="Path to configuration file (YAML). If not provided, uses default AppConfig."
     )
     
     parser.add_argument(
@@ -72,28 +66,10 @@ def parse_arguments():
         default=16,
         help="Number of CPU cores to use"
     )
-    
-    # --- REMOVED: Obsolete picrust2 arguments ---
-    # parser.add_argument("--picrust2_ref_dir", ...)
-    # parser.add_argument("--picrust2_aux_dir", ...)
     return parser.parse_args()
 
-# ==================================================================================== #
-
-# ==================================================================================== #
-# IMPROVED RESOURCE MONITOR
-# ==================================================================================== #
-
-import threading
-import time
-import psutil
-import os
-import logging
-import platform
-import getpass
-
 class ResourceMonitor:
-    def __init__(self, interval_seconds=300, target_dir=None):
+    def __init__(self, interval_seconds=300, target_dir=None, logger=None):
         """
         Monitor resources every `interval_seconds` (default 300s = 5m).
         
@@ -104,7 +80,7 @@ class ResourceMonitor:
         self.target_dir = target_dir or Path.cwd()
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
-        self.logger = logging.getLogger("workflow_16s")
+        self.logger = logger or get_logger("workflow_16s")
         self.hostname = platform.node()
         self.user = getpass.getuser()
 
@@ -171,29 +147,11 @@ class ResourceMonitor:
                 except Exception:
                     disk_str = "N/A"
 
-                # 2. Pipeline Stats
-                p_stats = self._get_process_tree_stats()
-                
-                if p_stats:
-                    # Format process names breakdown
-                    breakdown = ", ".join([f"{k}: {v}" for k, v in p_stats['names'].items()])
-                    
-                    msg = (
-                        f"\n📊 [SERVER HEALTH & PIPELINE METRICS]\n"
-                        f"   ├── 🖥️ System Status ({self.hostname})\n"
-                        f"   │   ├── Load (1/5/15m): {sys_load}\n"
-                        f"   │   ├── CPU Usage:      {sys_cpu}% (Global)\n"
-                        f"   │   ├── RAM Usage:      {sys_mem.percent}% ({sys_mem.used / (1024**3):.1f}/{sys_mem.total / (1024**3):.1f} GB)\n"
-                        f"   │   └── Disk Volume:    {disk_str}\n"
-                        f"   │\n"
-                        f"   └── 🚀 Pipeline Consumption (PID: {os.getpid()})\n"
-                        f"       ├── Hierarchy:      1 Parent + {p_stats['children']} Children = {p_stats['count']} Processes\n"
-                        f"       ├── Threading:      {p_stats['threads']} Active Threads\n"
-                        f"       ├── CPU Draw:       {p_stats['cpu_percent_total']:.1f}% (Cumulative across cores)\n"
-                        f"       ├── Memory (RSS):   {p_stats['rss_gb']:.2f} GB (Physical RAM)\n"
-                        f"       └── Breakdown:      {{{breakdown}}}"
-                    )
-                    self.logger.info(msg)
+                # 2. Pipeline Stats - DISABLED per user request
+                # p_stats = self._get_process_tree_stats()
+                # Server health monitoring output is now disabled
+                # The dashboard provides real-time system monitoring instead
+                pass
                 
                 self.stop_event.wait(self.interval - 1)
                 
@@ -209,11 +167,51 @@ class ResourceMonitor:
         self.stop_event.set()
         self.thread.join(timeout=2)
 
-# ==================================================================================== #
-# MAIN INTEGRATION
-# ==================================================================================== #
-
-from workflow_16s.utils.logger import get_logger
+def resolve_config_path(config_arg: Path) -> Path:
+    """
+    Intelligently resolve config file paths.
+    
+    Searches in this order:
+    1. As an absolute/relative path (if it exists)
+    2. Relative to current working directory
+    3. In common directories: ../amplicon/microbeatlas/, ../amplicon/workflow_16s/config/, etc.
+    
+    Args:
+        config_arg: Config path provided by user
+        
+    Returns:
+        Resolved Path object, or original path if not found (caller will handle error)
+    """
+    config_arg = Path(config_arg)
+    
+    # Try 1: Absolute or relative path as-is
+    if config_arg.exists():
+        return config_arg.resolve()
+    
+    # Try 2: Relative to current working directory
+    cwd_path = Path.cwd() / config_arg.name
+    if cwd_path.exists():
+        return cwd_path.resolve()
+    
+    # Try 3: Search common directories
+    search_dirs = [
+        Path.cwd(),  # Current directory
+        Path.cwd().parent,  # Parent directory
+        Path.cwd() / "config",  # config/ subdirectory
+        Path.cwd().parent / "microbeatlas",  # ../microbeatlas/
+        Path.cwd().parent / "workflow_16s" / "config",  # ../workflow_16s/config/
+        Path("/usr2/people/macgregor/amplicon/microbeatlas"),  # Absolute microbeatlas
+        Path("/usr2/people/macgregor/amplicon/workflow_16s/config"),  # Absolute workflow config
+    ]
+    
+    filename = config_arg.name
+    for search_dir in search_dirs:
+        candidate = search_dir / filename
+        if candidate.exists():
+            return candidate.resolve()
+    
+    # Not found - return original (caller will handle the error)
+    return config_arg
 
 async def main():
     """Main function to run the workflow."""
@@ -228,49 +226,69 @@ async def main():
     args.output_dir.mkdir(exist_ok=True, parents=True)
     log_dir_path = Path("/usr2/people/macgregor/amplicon/project_01/07_logs")
     log_dir_path.mkdir(exist_ok=True, parents=True)
+    #initialize_logging(log_dir=log_dir_path)
     
-    initialize_logging(log_dir_path)
     logger = get_logger()
     
-    logger.info("=== Starting 16S Downstream Analysis ===")
-    logger.info(f"Data directory: {args.data_dir}")
-    logger.info(f"Output directory: {args.output_dir}")
+    logger.info(f"=== Starting 16S Downstream Analysis ===\n"
+                f"Data directory:   {args.data_dir}\n"
+                f"Output directory: {args.output_dir}")
     
+    try:
+        from workflow_16s.config.config_schema import load_config
+        from workflow_16s.api.environmental_data import (
+            EnvironmentalDataCollector, 
+            run_arkin_enrichment
+        )
+        from workflow_16s.api.environmental_data.nuclear_fuel_cycle.main import NFCFacilitiesHandler
+    except ImportError as e:
+        print(f"Error importing workflow modules: {e}", file=sys.stderr)
+        print("Ensure the 'workflow_16s' package is installed correctly.")
+        sys.exit(1)
     # --- 1. INITIALIZE MONITOR WITH DISK PATH ---
-    monitor = ResourceMonitor(interval_seconds=300, target_dir=args.output_dir)
+    monitor = ResourceMonitor(interval_seconds=300, target_dir=args.output_dir, logger=logger)
     monitor.start()
     
     try:
-        # Load configuration
+        # Load configuration with intelligent path resolution
         if args.config:
-            config = load_config(args.config)
-            logger.info(f"Loaded configuration from: {args.config}")
+            # Resolve config path intelligently (searches multiple locations)
+            resolved_config = resolve_config_path(args.config)
+            
+            if resolved_config.exists():
+                config = load_config(resolved_config)
+                logger.info(f" 📖 Loaded configuration from: {resolved_config}")
+            else:
+                logger.warning(f" ⚠️  Config file not found: {args.config}")
+                logger.warning(f"    (Searched: {args.config}, cwd/{args.config.name}, parent, microbeatlas/, etc.)")
+                logger.info(" 📖 Using default configuration.")
+                from workflow_16s.config import AppConfig
+                config = AppConfig() # type: ignore
         else:
-            from workflow_16s.config_schema import AppConfig
-            config = AppConfig()
-            logger.info("Using default configuration")
+            logger.info(" 📖 Using default configuration (no --config provided).")
+            from workflow_16s.config import AppConfig
+            config = AppConfig() # type: ignore
         
         # Override CPU settings if provided
         if args.n_cpus:
             config.execution.threads = args.n_cpus
-            logger.info(f"Using {args.n_cpus} CPU cores")
+            logger.info(f" 💽 Using {args.n_cpus} CPU cores.")
         
         # Asynchronous loading of NFC facilities 
         nfc_facilities_df = pd.DataFrame()
         if config.nfc_facilities.enabled:
-            logger.info("NFC facility processing is enabled. Fetching data...")
+            logger.info(" ☢️ NFC facility processing is enabled. Fetching data...")
             try:
                 nfc_handler = NFCFacilitiesHandler(config)
                 nfc_facilities_df = await nfc_handler.nfc_facilities()
                 if not nfc_facilities_df.empty:
-                    logger.info(f"Successfully loaded {len(nfc_facilities_df)} NFC facilities.")
+                    logger.info(f" ✅ Successfully loaded {len(nfc_facilities_df)} NFC facilities.")
                 else:
-                    logger.warning("NFC facility handler ran but returned no data.")
+                    logger.warning(" ⚠️ NFC facility handler ran but returned no data.")
             except Exception as e:
-                logger.error(f"Failed to load NFC facility data: {e}", exc_info=True)
-                logger.warning("Continuing workflow without NFC facility data.")
-        else:
-            logger.info("NFC facility processing is disabled in config.")
+                logger.error(f" 🚫 Failed to load NFC facility data: {e}", exc_info=True)
+                logger.warning(" ⚠️ Continuing workflow without NFC facility data.")
+        #else: logger.info("NFC facility processing is disabled in config.")
         
         from workflow_16s.downstream.workflow import DownstreamWorkflow
         
@@ -285,14 +303,15 @@ async def main():
         
         logger.info("=== Workflow Completed Successfully ===")
         
+    except KeyboardInterrupt:
+        logger.warning("\n⏹️  User interrupted workflow (Ctrl+C)")
+        sys.exit(130)  # Standard exit code for SIGINT
     except Exception as e:
-        logger.critical(f"Workflow failed: {e}", exc_info=True)
+        logger.critical(f" 🚫 Workflow failed: {e}", exc_info=True)
         sys.exit(1)
     finally:
         monitor.stop()
-        
-# ==================================================================================== #
 
 if __name__ == "__main__":
-    # Use asyncio.run() to execute the async main function
     asyncio.run(main())
+    

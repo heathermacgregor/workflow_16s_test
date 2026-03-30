@@ -47,6 +47,18 @@ pio.templates["heather"] = go.layout.Template( # type: ignore
 pio.templates.default = "heather"
 
 
+# ===== GLOBAL FIGURE HANDLER (Initialized lazily) =====
+_figure_handler = None
+
+def _get_figure_handler():
+    """Lazy initialization of global FigureHandler instance."""
+    global _figure_handler
+    if _figure_handler is None:
+        from workflow_16s.downstream.visualization.figure_handler import create_figure_handler
+        _figure_handler = create_figure_handler()
+    return _figure_handler
+
+
 def fig_to_json(fig, output_path, verbose: bool = True):
     # Convenience for optional INFO logging
     log_ok = (lambda msg: logger.debug(msg)) if verbose else (lambda *_: None)
@@ -72,22 +84,64 @@ def fig_to_html(fig, output_path, verbose: bool = True):
         logger.error(f"Failed to save figure: {str(e)}")
 
 
-def save_fig(fig: go.Figure, output_path: Path, formats: List[str] = ['html']):
-    """Saves a Plotly figure to one or more formats (html, json, png, etc.)."""
+def save_fig(fig: go.Figure, output_path: Path, formats: List[str] = ['html'], verbose: bool = False, auto_cleanup: bool = True):
+    """Saves a Plotly figure to one or more formats (html, json, png, etc.).
+    
+    Uses centralized FigureHandler for consistent error handling, cleanup, and statistics.
+    This ensures batch rendering (e.g., 2,100+ SHAP plots) maintains memory efficiency.
+    
+    Parameters
+    ----------
+    fig : go.Figure
+        Plotly figure to save
+    output_path : Path
+        Output path (without extension, extensions added per format)
+    formats : List[str]
+        List of formats to save ('html', 'json', 'png', 'jpg', 'svg', 'pdf')
+    verbose : bool
+        If True, logs each format save. If False, only logs errors (for batch processing).
+    auto_cleanup : bool
+        If True (default), cleanup figure after saving to prevent memory bloat
+    """
+    handler = _get_figure_handler()
+    output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    
     for fmt in formats:
         try:
             if fmt == 'html':
-                fig.write_html(f"{output_path}.html", include_plotlyjs="cdn")
+                # Use FigureHandler for HTML saves (most common)
+                html_path = f"{output_path}.html"
+                success = handler.save_plotly_html(fig, html_path, cdn=True, auto_cleanup=False)
+                if success and verbose:
+                    logger.debug(f"Saved figure to '{html_path}'")
+                elif not success:
+                    logger.warning(f"Failed to save HTML to '{html_path}'")
+                    
             elif fmt == 'json':
-                fig.write_json(f"{output_path}.json")
-            else: # For png, jpg, svg, pdf
-                # Note: This requires the 'kaleido' package to be installed
-                # pip install kaleido
-                fig.write_image(f"{output_path}.{fmt}", scale=2)
-            logger.debug(f"Saved figure to '{output_path}.{fmt}'")
+                # JSON: use standard write (lightweight, no cleanup needed)
+                json_path = f"{output_path}.json"
+                fig.write_json(json_path, engine="json")
+                if verbose:
+                    logger.debug(f"Saved figure to '{json_path}'")
+                    
+            else:
+                # PNG, JPG, SVG, PDF: use FigureHandler
+                image_path = f"{output_path}.{fmt}"
+                # Use appropriate scale based on format
+                scale = 2 if fmt == 'png' else 1  # PNG needs scale for quality
+                success = handler.save_plotly_png(fig, image_path, scale=scale, auto_cleanup=False)
+                if success and verbose:
+                    logger.debug(f"Saved figure to '{image_path}'")
+                elif not success:
+                    logger.warning(f"Failed to save {fmt.upper()} to '{image_path}'")
+                    
         except Exception as e:
             logger.error(f"Failed to save figure as {fmt}: {e}")
+    
+    # Auto-cleanup after all formats saved (if enabled)
+    if auto_cleanup:
+        handler.cleanup_figure(fig, fig_type='plotly')
 
 
 def apply_common_layout(fig: go.Figure, x_title: str, y_title: str, main_title: str) -> go.Figure:

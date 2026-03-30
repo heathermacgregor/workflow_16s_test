@@ -34,10 +34,10 @@ sys.path.append(str(parent_dir))
 from workflow_16s import constants
 
 from workflow_16s.config import get_config
-from workflow_16s.logger import setup_logging 
+from workflow_16s.logger import setup_logging, initialize_logging 
 
-from workflow_16s.amplicon_data.downstream.results_analysis import DownstreamResultsAnalyzer
-from workflow_16s.figures.html_report import generate_html_report
+#from workflow_16s.amplicon_data.downstream.results_analysis import DownstreamResultsAnalyzer
+#from workflow_16s.figures.html_report import generate_html_report
 
 # Upstream-only imports (lazy-loaded)
 try:
@@ -57,7 +57,7 @@ from workflow_16s.utils.io import (
     load_datasets_list, safe_delete, write_manifest_tsv, write_metadata_tsv
 )
 
-from workflow_16s.downstream.analysis import run_downstream
+#from workflow_16s.downstream.analysis import run_downstream
 from workflow_16s.utils.dir import ProjectDir, create_project_dirs
 from workflow_16s.qc import ComprehensiveQC, quick_qc
 
@@ -76,17 +76,23 @@ numba.config.NUMBA_NUM_THREADS = 8
 def is_enabled(config):
     return config.get("enabled", False)
 
-def get_existing_subsets(config, logger) -> Dict[str, Dict[str, Path]]:
-    """Without running upstream processing, identify existing subsets that have
+def get_existing_subsets(
+    config: Any, 
+    logger: Any
+) -> Dict[str, Dict[str, Path]]:
+    """
+    Without running upstream processing, identify existing subsets that have
     required QIIME outputs.
     
-    Args:
+    Parameters
+    
         config : 
             Configuration dictionary.
         logger : 
             Logger instance.
         
-    Returns:
+    Returns
+    
         Dictionary mapping subset IDs to dictionaries of file paths.
     """
     print(type(logger))
@@ -243,7 +249,7 @@ def run_upstream(config, logger, project_dir) -> Union[List, None]:
 
                         # Write the manifest TSV file
                         manifest_path = subset_dirs["qiime"] / "manifest.tsv"
-                        write_manifest_tsv(seq_paths, manifest_path)
+                        write_manifest_tsv(seq_paths, manifest_path, library_layout=subset["library_layout"])
 
                         qiime_dir = subset_dirs["qiime"]
                         qiime_outputs = execute_qiime(
@@ -354,19 +360,19 @@ class Workflow16S:
         self.logger.info("Starting downstream processing")
         existing_subsets = self._get_existing_subsets()
         try:
-            analyzer = run_downstream(self.config, self.project_dir, existing_subsets)
-            results = analyzer.results
-            print_data_dicts(results)
+            #analyzer = run_downstream(self.config, self.project_dir, existing_subsets)
+            #results = analyzer.results
+            #print_data_dicts(results)
             self.logger.info("Downstream processing completed")
 
             # Generate a comprehensive HTML report
             output_path = Path(self.project_dir.final) / "analysis_report_ml_minimal_run.html"
-            generate_html_report(
-                amplicon_data=results,
-                output_path=output_path,
-                max_features=20,
-                config=self.config
-            )
+            #generate_html_report(
+            #    amplicon_data=results,
+            #    output_path=output_path,
+            #    max_features=20,
+            #    config=self.config
+            #)
             
         except Exception as e:
             self.logger.error(f"Failed downstream processing: {e}\n"
@@ -390,12 +396,22 @@ class Workflow16S:
 class WorkflowError(Exception):
     """Custom exception for workflow-related errors."""
     pass
-            
 
 def main(config_path: Path = constants.DEFAULT_CONFIG) -> None:
     """Run the entire workflow."""    
-        workflow = Workflow16S(config_path)
-        workflow.run()
+    # Initialize logging early to ensure all modules have access to proper handlers
+    from workflow_16s.utils.dir import create_project_dirs
+    from workflow_16s.config import get_config
+    temp_config = get_config(config_path)
+    project_config = temp_config.get("project", {})
+    project_dir = create_project_dirs(
+        project_name=project_config.get("name", "project_01"), 
+        base_path=project_config.get("dir_path", "../../project_01")
+    )
+    initialize_logging(project_dir.get_dir('logs').dir_path)
+    
+    workflow = Workflow16S(config_path)
+    workflow.run()
 
 if __name__ == "__main__":
     # Get custom config.yaml file from system arguments
@@ -409,5 +425,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     main(args.config)
     
-        # Prevent fork bomb from multiprocessing.Pool in downstream analysis
-        main(args.config)
+    # Prevent fork bomb from multiprocessing.Pool in downstream analysis
+    main(args.config)

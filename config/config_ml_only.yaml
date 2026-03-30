@@ -20,6 +20,9 @@ paths:
   vsearch_db: "/usr2/people/macgregor/blast_db/silva_nr99.udb"
   classifier: "/usr2/people/macgregor/amplicon/workflow_16s/resources/classifier/silva-138-99-515-806" 
   phylogeny: "/usr2/people/macgregor/amplicon/workflow_16s/resources/phylogeny/gg-2022-10-ssu-nr99" 
+  backbone: "/usr2/people/macgregor/amplicon/workflow_16s/resources/sepp/2022.10.backbone.full-length.fna.qza"
+  reference_tree: "/usr2/people/macgregor/amplicon/workflow_16s/resources/sepp/gg2-2022.10-sepp-ref.qza" # Path to the SEPP reference tree artifact
+  reference_taxonomy: "/usr2/people/macgregor/amplicon/workflow_16s/resources/sepp/gg2-2022.10-taxonomy.qza"
   manual_metadata: "/usr2/people/macgregor/manual_metadata" 
   dataset_list: "/usr2/people/macgregor/amplicon/workflow_16s/resources/input/example_01/datasets.txt" 
   dataset_info: "/usr2/people/macgregor/amplicon/workflow_16s/resources/input/example_01/datasets.tsv" 
@@ -78,13 +81,34 @@ credentials:
   google_earth_engine_project: 'wired-day-365517'
   springer_api_key: "fb250d7df882273aa34875560ce81986"
   mendeley_api_key: "weJd5aHPGV6Cv26I"
+  llm_api_key: "${LLM_API_KEY}"
 
 # ===================================================================
 # UPSTREAM - ALL DISABLED
 # ===================================================================
-upstream: 
+sample_discovery:
+  enabled: true
+  n_threads: 16
+  maps: True
+  target_restriction: "any"  # <-- Allows V1-V9, any primers
+  min_samples_per_study: 15
+  
+  # Define your NFC-specific hunt here
+  requested_environments:
+    - name: "Nuclear_Sites"
+      keywords: ["nuclear", "uranium", "reprocessing"]
+      biome_ids: 
+        - "ENVO:01000155" # Human-influenced environment (optional)
+  osm_features: []
+  
+# Upstream Agent Settings
+upstream:
   enabled: False
-
+  use_publication_cache: true
+  max_parallel_metadata_fetch: 10  # <-- Matches our new Network Semaphore limit
+  arkin_agents:
+    enabled: true
+    llm_model: "gpt-4-turbo"
 upload_anndata_to_zenodo:
   enabled: False  # Disabled
 
@@ -199,10 +223,10 @@ clean_fastq:
 downstream: 
   enabled: True  # ENABLED
   find_subsets: False
-  
-  # Data loading - DISABLED - will concatenate 385 h5ad files
-  load_existing_data: True  # Use pre-concatenated file for speed
-  data_file: "../project_01/03_processed_data/final_processed_adata.h5ad"
+  load_existing: False #True  # Load preprocessed data
+  batch_size: 10
+  test_sample_limit: 0  # Limit analysis to N samples for testing (0 = no limit)
+  data_file: "../project_01/03_processed_data/KBase_Compendium_V4_Genus.h5ad"
 
 group_column: "facility_match"  # Primary grouping variable
 group_column_type: "bool"
@@ -226,8 +250,8 @@ preprocessing:
     threads: 4
   filter:
     enabled: True
-    min_sequencing_depth: 1000
-    min_sample_prevalence: 2
+    min_sequencing_depth: 500
+    min_sample_prevalence: 1
     target_gene:
       enabled: False
       keep_genes: ['16S']
@@ -348,7 +372,7 @@ stats:
 # -------------------------------------------------------------------
 beta_diversity: 
   enabled: False
-  load_existing: False
+  load_existing: True
   max_workers: 2
   cpu_limit: 16
   tables:
@@ -373,13 +397,19 @@ diversity:
 # MACHINE LEARNING - UNIFIED CONFIGURATION
 # -------------------------------------------------------------------
 ml: 
-  strict_targets: true
+  strict_targets: True
   enabled: True 
   load_existing: True 
   n_threads: 16
   num_features: 100
   step_size: 100
   
+  hyperparameter_grid:
+      depth: [2, 4, 6, 8]
+      learning_rate: [0.01, 0.05, 0.1]
+      l2_leaf_reg: [1, 3, 5, 7]
+      iterations: [500]  # Keeping iterations fixed speeds up search
+    
   # THE MATRIX
   grid_settings:
     levels: 
@@ -390,11 +420,25 @@ ml:
       - "clr"
       #- "binary" # Test presence/absence
     
+    strategies:
+      - "baseline"          # Standard random split
+      - "group_validated"   # Uses GroupKFold (strict isolation)
+      - "lopocv"            # Leave-One-Project-Out CV
+      - "meta_analysis" 
+      - "batch_aware"       # Includes batch as a feature
+      - "meta_aware"        # Includes environmental metadata as features
+      - "spatial_cv"        # Spatially-aware CV based on sample locations
+
     fs_strategies:
       - "baseline"          # Standard random split
       - "agnostic"          # Explicitly drops batch columns
       - "batch_adjusted"    # Includes batch as a feature
       - "group_validated"   # Uses GroupKFold (strict isolation)
+      - "lopocv"
+      - "meta_analysis"
+      - "batch_aware"
+      - "meta_aware"
+      - "spatial_cv"
       
     # Model Training Strategies (Random Forest / CatBoost)
     batch_strategies:
@@ -404,11 +448,11 @@ ml:
 
   # Define your targets HERE so they are read by MLConfig
   targets:
+    - 'env_material' # Environmental context
     - 'facility_match' # Primary target
+    - 'target_subfragment' # Batch variable that may correlate with targets
     - 'facility_distance_km' # Secondary target
-    #- 'facility_type' # Tertiary target (if data available)
-    #- 'facility_status' # Quaternary target (if data available)
-    #- 'nuclear_contamination_status' # Compare with facility matches
+    
   
   permutation_importance: 
     enabled: False
@@ -416,21 +460,20 @@ ml:
   plots:
     enabled: True
     
-  # CRITICAL: This section explicitly disables the crash-prone test
   overfitting_prevention:
-    enabled: True            # Keep the module on for Cross-Validation
-    permutation_test: False  # <--- THIS WILL NOW WORK
+    enabled: True            
+    permutation_test: False  
   
   models:
     enable_random_forest: False
     enable_catboost: True
-    enable_regression: True      # Disable all regression tasks
+    enable_regression: True      
     enable_classification: True
-    n_estimators: 500              # Increase trees for better performance
+    n_estimators: 500            # Increase trees for better performance
     max_depth: 10
     
   validation:
-    test_size: 0.3                 # Use 80/20 split instead of 70/30
+    test_size: 0.3               # Use 80/20 split instead of 70/30
     cv_folds: 10
 
   tables:
@@ -484,7 +527,10 @@ ml:
     confounding_detection:
       enabled: True
       correlation_threshold: 0.7
-      methods: ['cramer_v', 'eta_squared', 'spearman']
+      methods: 
+        - 'cramer_v'
+        - 'eta_squared'
+        - 'spearman'
       plot_confounding: True
     
     comparison:
@@ -520,7 +566,7 @@ rarefaction:
 # HTML REPORT GENERATION - **ENABLED**
 # -------------------------------------------------------------------
 reporting:
-  enabled: True  # *** ENABLED ***
+  enabled: False  # *** ENABLED ***
   
   # Include only ML and synthesis sections
   include_sections:
@@ -546,16 +592,36 @@ reporting:
     # Targets to include in report
     targets:
       - 'facility_match'
+      - 'facility_type' # Tertiary target (if data available)
+      - 'facility_status' # Quaternary target (if data available)
+      - 'nuclear_contamination_status' # Compare with facility matches
+      - 'env_biome' # Environmental context
+      - 'env_feature' # Environmental context
+      - 'env_material' # Environmental context
+      - 'ph'
+      - 'temperature_c'
+      - 'salinity_psu'
+      - 'sequencing_center' # Batch variable
+      - 'instrument_platform' # Batch variable
+      - 'instrument_model' # Batch variable
+      - 'library_layout' # Batch variable
+      - 'pcr_primer_fwd' # Batch variable
+      - 'pcr_primer_rev' # Batch variable
+      - 'target_subfragment' # Batch variable
+      - 'latitude_deg'
+      - 'longitude_deg'
+      - 'collection_date' # Temporal variable
       - 'facility_distance_km'
-      - 'facility_type'
-      - 'facility_status'
-      - 'nuclear_contamination_status'
     
     # Strategies to compare
     strategies:
       - 'baseline'  # No batch correction
       - 'agnostic'  # Batch excluded
       - 'group_validated'  # Group-aware CV
+      - "lopocv"
+      - "meta_analysis"
+      - "batch_aware"
+      - "meta_aware"
     
     # Top N features to display
     top_n_features: 30
@@ -575,7 +641,7 @@ reporting:
 # SYNTHESIS - **ENABLED** (for ML report generation)
 # -------------------------------------------------------------------
 synthesis:
-  enabled: True
+  enabled: False
   ml_visualizations: True
   strategy_comparison: True
   group_fingerprints: True

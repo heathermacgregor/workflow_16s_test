@@ -1,10 +1,9 @@
-# ==================================================================================== #
+# workflow_16s/utils/dir_utils.py
 
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
-from workflow_16s.config_schema import AppConfig
+from workflow_16s.config import AppConfig
 
 # ==================================================================================== #
 
@@ -67,10 +66,16 @@ class SubSet:
                 subset["dataset"] + '.' 
                 + subset["instrument_platform"] + '.' 
                 + subset["library_layout"] + '.' 
-                + subset["target_subfragment"] + '.' 
-                + f"FWD_{re.sub(r'[^a-zA-Z0-9-]', '_', subset['pcr_primer_fwd_seq'])}" + '.' 
-                + f"REV_{re.sub(r'[^a-zA-Z0-9-]', '_', subset['pcr_primer_rev_seq'])}"
+                + subset["target_subfragment"]
             ).upper()
+            #subset_id = (
+            #    subset["dataset"] + '.' 
+            #    + subset["instrument_platform"] + '.' 
+            #    + subset["library_layout"] + '.' 
+            #    + subset["target_subfragment"] + '.' 
+            #    + f"FWD_{re.sub(r'[^a-zA-Z0-9-]', '_', subset['pcr_primer_fwd_seq'])}" + '.' 
+            #    + f"REV_{re.sub(r'[^a-zA-Z0-9-]', '_', subset['pcr_primer_rev_seq'])}"
+            #).upper()
         else:
             raise ValueError("Subset must be either a string or a dictionary.")
         self.project = project

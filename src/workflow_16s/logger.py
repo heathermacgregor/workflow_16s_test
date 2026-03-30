@@ -3,6 +3,8 @@
 # Standard Library
 from datetime import datetime
 import logging
+import functools
+from typing import Callable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Union
@@ -14,6 +16,43 @@ from rich.theme import Theme
 
 # ==================================== FUNCTIONS ===================================== #
 
+import inspect
+
+def with_logger(func_or_class):
+    """
+    The 'Thar-Proof' Decorator. 
+    Only injects 'logger' if the function signature allows for it.
+    """
+    if inspect.isclass(func_or_class):
+        target = func_or_class.__init__
+    else:
+        target = func_or_class
+
+    @functools.wraps(target)
+    def wrapper(*args, **kwargs):
+        # 1. Prepare the logger instance
+        logger_instance = get_logger("workflow_16s")
+        
+        # 2. Inspect the recipient's signature
+        sig = inspect.signature(target)
+        
+        # 3. Only add 'logger' to kwargs if the function can catch it
+        # (Either it has a parameter named 'logger' or it has **kwargs)
+        has_logger_param = 'logger' in sig.parameters
+        has_var_kwargs = any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values())
+
+        if has_logger_param or has_var_kwargs:
+            kwargs['logger'] = logger_instance
+            
+        # 4. Call the function - This will no longer throw a TypeError
+        return target(*args, **kwargs)
+
+    if inspect.isclass(func_or_class):
+        func_or_class.__init__ = wrapper
+        return func_or_class
+    
+    return wrapper
+
 def setup_logging(
     log_dir_path: Union[str, Path],
     log_filename: Union[str, None] = None,
@@ -24,9 +63,9 @@ def setup_logging(
 ) -> logging.Logger:
     """
     Configure unified logging with:
-      • Colorful Rich console output with consistent formatting
-      • Rotating file handler for full DEBUG logs
-      • Progress bars integrated into logging system
+        • Colorful Rich console output with consistent formatting
+        • Rotating file handler for full DEBUG logs
+        • Progress bars integrated into logging system
     """
     # ───────────────────── log‑file path ──────────────────────
     log_dir_path = Path(log_dir_path)
@@ -42,6 +81,11 @@ def setup_logging(
     # Disable propagation to avoid duplicate logs from parent/root
     logger.propagate = False  # 🚀 Key fix
 
+    if logger.handlers:
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+            handler.close()
+            
     # Only set up handlers if none exist (prevents repeated setup in parallel workers)
     if not logger.handlers:
         # Remove existing handlers to avoid duplicates (should be empty, but safe)
@@ -99,11 +143,7 @@ def setup_logging(
         
         logger.addHandler(rich_handler)
 
-        # Only log initialization in the main process (not in child workers)
-        import os
-        # Main process usually has ppid != its own pid and != 1
-        if os.getppid() != os.getpid() and os.getppid() != 1:
-            logger.info("Logging initialised → %s", log_file_path)
+        logger.info("Logging initialised → %s", log_file_path)
     return logger
 
 def get_logger(name="workflow_16s", log_dir: Union[str, Path, None] = None):
@@ -111,7 +151,8 @@ def get_logger(name="workflow_16s", log_dir: Union[str, Path, None] = None):
     Retrieves the logger instance, initializing it if it hasn't been set up.
     This ensures that logging is automatically configured on its first use.
     """
-    logger = logging.getLogger(name)
+    return logging.getLogger(name)
+    '''
     if not logger.handlers:
         # If handlers are not configured, set them up automatically.
         # This makes the setup implicit and robust.
@@ -123,3 +164,4 @@ def get_logger(name="workflow_16s", log_dir: Union[str, Path, None] = None):
         setup_logging(log_dir_path=log_dir)
         
     return logger
+    '''

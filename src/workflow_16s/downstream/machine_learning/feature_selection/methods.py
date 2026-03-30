@@ -1,144 +1,212 @@
-# feature_selection/methods.py
-
 import pandas as pd
 import numpy as np
 import shap
 import logging
-from typing import List, Tuple, Dict, Optional, Literal, Callable, Union
-from sklearn.feature_selection import RFE, SelectKBest, SelectFromModel, chi2, f_classif, f_regression
+import json
+import shutil
+from pathlib import Path
+from datetime import datetime
+from typing import List, Tuple, Dict, Optional, Literal, Any, Union
+from sklearn.feature_selection import (
+    RFE, SelectKBest, SelectFromModel, chi2, 
+    f_classif, f_regression
+)
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LogisticRegression
 from catboost import CatBoostClassifier, CatBoostRegressor
 
-from .reporting import _check_shap_installed
-
 logger = logging.getLogger('workflow_16s')
 
-def rfe_feature_selection(X_train, y_train, X_test, y_test, num_features, step_size, threads, random_state, **kwargs):
-    model_cls = CatBoostClassifier if kwargs.get('task_type', 'Classification') == 'Classification' else CatBoostRegressor
-    m = model_cls(iterations=500, thread_count=threads, random_state=random_state, verbose=False)
-    rfe = RFE(estimator=m, n_features_to_select=min(num_features, X_train.shape[1]), step=step_size, verbose=1)  # type: ignore
-    rfe.fit(X_train, y_train); cols = X_train.columns[rfe.support_]
-    return pd.DataFrame(rfe.transform(X_train), columns=cols, index=X_train.index), pd.DataFrame(rfe.transform(X_test), columns=cols, index=X_test.index), cols.tolist()  # type: ignore
 
-def select_k_best_feature_selection(X_train, y_train, X_test, y_test, num_features, **kwargs):
-    score_func = f_classif if kwargs.get('task_type') == 'Classification' else f_regression
-    skb = SelectKBest(score_func=score_func, k=min(num_features, X_train.shape[1])).fit(X_train, y_train)
-    cols = X_train.columns[skb.get_support()]
-    return pd.DataFrame(skb.transform(X_train), columns=cols, index=X_train.index), pd.DataFrame(skb.transform(X_test), columns=cols, index=X_test.index), cols.tolist()  # type: ignore
+# RECOVERY & PROXY MAPPING 
 
-def chi_squared_feature_selection(X_train, y_train, X_test, y_test, num_features, **kwargs):
-    if (X_train < 0).any().any(): raise ValueError("Chi2 requires non-negative count data.")
-    skb = SelectKBest(score_func=chi2, k=min(num_features, X_train.shape[1])).fit(X_train, y_train)
-    cols = X_train.columns[skb.get_support()]
-    return pd.DataFrame(skb.transform(X_train), columns=cols, index=X_train.index), pd.DataFrame(skb.transform(X_test), columns=cols, index=X_test.index), cols.tolist()  # type: ignore
-
-def lasso_feature_selection(X_train, y_train, X_test, y_test, num_features, random_state=42, **kwargs):
-    l = LogisticRegression(penalty='l1', solver='liblinear', random_state=random_state).fit(X_train, y_train)
-    m = SelectFromModel(l, max_features=num_features, prefit=True); cols = X_train.columns[m.get_support()]
-    return pd.DataFrame(m.transform(X_train), columns=cols, index=X_train.index), pd.DataFrame(m.transform(X_test), columns=cols, index=X_test.index), cols.tolist()  # type: ignore
-
-def shap_feature_selection(X_train, y_train, X_test, y_test, num_features, threads, compute_interactions=True, **kwargs):
+def filter_multicollinear_features(
+    X: pd.DataFrame, 
+    y: pd.Series, 
+    threshold: float = 0.95, 
+    task_type: str = 'Classification',
+    recover_best: bool = True,
+    out_dir: Optional[Path] = None
+) -> List[str]:
     """
-    SHAP-based feature selection with optional interaction value computation.
-    
-    Args:
-        compute_interactions: If True, compute SHAP interaction values (slower but more informative)
-                             Default is True for publication-quality analysis.
-    
-    Returns:
-        Tuple of (X_train_selected, X_test_selected, selected_cols, shap_interaction_values)
+    Groups correlated features, picks the best univariate representative, 
+    and saves a proxy mapping.
     """
-    _check_shap_installed()
-    cls = CatBoostClassifier if kwargs.get('task_type') == 'Classification' else CatBoostRegressor
-    m = cls(iterations=1000, thread_count=threads, random_state=42, verbose=False).fit(X_train, y_train)
+    logger.info(f"Filtering multicollinearity (Threshold > {threshold})...")
+    # Only correlate numeric columns (Ignore String/Batch IDs)
+    X_numeric = X.select_dtypes(include=['number'])
     
-    # Compute regular SHAP values
-    explainer = shap.TreeExplainer(m)
-    sample_X = X_train.sample(min(1000, len(X_train)))
-    v = explainer.shap_values(sample_X)
+    # Safety check: if no numeric data remains, return original features
+    if X_numeric.empty:
+        logger.warning(f"⚠️ No numeric features found. Returning all {len(X.columns)} features.")
+        return X.columns.tolist()
+        
+    corr_matrix = X_numeric.corr().abs()
+    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
     
-    if isinstance(v, list): v = v[-1]
-    elif v.ndim == 3: v = v[:, :, 1]
-    imp = np.abs(v).mean(axis=0); idx = np.argsort(imp)[-num_features:]; cols = X_train.columns[idx].tolist()
-    
-    # Optionally compute interaction values
-    interaction_values = None
-    if compute_interactions:
-        try:
-            logger.info("Computing SHAP interaction values (this may take a while)...")
-            # Use smaller sample for interactions (more expensive)
-            interaction_sample = X_train.sample(min(500, len(X_train)))
-            interaction_values = explainer.shap_interaction_values(interaction_sample)
-            
-            # Handle multiclass case
-            if isinstance(interaction_values, list):
-                interaction_values = interaction_values[-1]  # Use last class
-            
-            logger.info(f"SHAP interaction values computed: shape {interaction_values.shape}")
-        except Exception as e:
-            logger.warning(f"Failed to compute SHAP interactions: {e}")
-            interaction_values = None
-    
-    return X_train[cols], X_test[cols], cols, interaction_values
+    clusters: Dict[str, List[str]] = {}
+    to_drop = set()
 
-def perform_feature_selection(X_train, y_train, X_test, y_test, feature_selection='rfe', **kwargs):
+    for col in upper.columns:
+        correlated = upper.index[upper[col] > threshold].tolist()
+        if correlated:
+            clusters[col] = correlated
+            for c in correlated: to_drop.add(c)
+
+    final_keep = [c for c in X.columns if c not in to_drop]
+
+    if recover_best and clusters:
+        score_func = f_classif if task_type == 'Classification' else f_regression
+        recovered_map = {}
+        
+        for rep, members in clusters.items():
+            full_group = [rep] + members
+            scores = score_func(X[full_group].fillna(0), y)[0]
+            best_feature = full_group[np.argmax(scores)]
+            
+            recovered_map[best_feature] = [f for f in full_group if f != best_feature]
+            if best_feature not in final_keep:
+                final_keep.append(best_feature)
+
+        if out_dir:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            with open(out_dir / "cluster_mapping.json", "w") as f:
+                json.dump(recovered_map, f, indent=4)
+    
+    # 🚨 SAFETY: Never return 0 features
+    if not final_keep:
+        logger.warning(f"⚠️ Multicollinearity filter would remove all features! Returning all features.")
+        return X.columns.tolist()
+    
+    logger.debug(f"Multicollinearity filter: {len(X.columns)} → {len(final_keep)} features")
+    return list(set(final_keep))
+
+
+def annotate_proxies(top_features_df: pd.DataFrame, out_dir: Path) -> pd.DataFrame:
+    """
+    Reads cluster_mapping.json and adds a 'Proxy_For' column to results.
+    """
+    map_path = out_dir / "cluster_mapping.json"
+    if not map_path.exists(): return top_features_df
+    
+    with open(map_path, "r") as f: proxy_map = json.load(f)
+    
+    top_features_df['proxy_for'] = top_features_df['feature'].apply(
+        lambda x: ", ".join(proxy_map[x]) if x in proxy_map else ""
+    )
+    top_features_df.columns = top_features_df.columns.str.lower()
+    return top_features_df
+
+
+# --- SECTION 2: UNIVERSAL ROUTER ---
+
+def perform_feature_selection(
+    X_train: pd.DataFrame, 
+    y_train: pd.Series, 
+    X_test: pd.DataFrame, 
+    y_test: pd.Series, 
+    feature_selection: Literal['rfe', 'shap', 'lasso', 'chi_squared', 'select_k_best'] = 'rfe', 
+    **kwargs: Any
+) -> Tuple[pd.DataFrame, pd.DataFrame, List[str], pd.Series, pd.Series]:
     """
     Router for all implemented selection methods.
-    Returns:
-        X_train_sel, X_test_sel, selected_cols, y_train_norm, y_test_norm
-        (y_train_norm/y_test_norm are the possibly normalized binary labels for downstream use)
     """
-    # --- Robust binary label normalization for classification tasks ---
     task_type = kwargs.get('task_type', 'Classification')
-    y_train_norm, y_test_norm = y_train, y_test
-    if task_type == 'Classification':
-        # Only relabel if binary and not already {0,1} or {-1,1}
-        unique_vals = np.unique(y_train)
-        if len(unique_vals) == 2:
-            if not (set(unique_vals) == {0, 1} or set(unique_vals) == {-1, 1}):
-                logger.info(f"Normalizing binary labels from {set(unique_vals)} to {{0,1}} for sklearn compatibility.")
-                min_val, max_val = unique_vals.min(), unique_vals.max()
-                y_train_norm = (y_train == max_val).astype(int)
-                y_test_norm = (y_test == max_val).astype(int)
-    res = None
-    if feature_selection == 'rfe':
-        res = rfe_feature_selection(X_train, y_train_norm, X_test, y_test_norm, **kwargs)
-    elif feature_selection == 'select_k_best':
-        res = select_k_best_feature_selection(X_train, y_train_norm, X_test, y_test_norm, **kwargs)
-    elif feature_selection == 'chi_squared':
-        res = chi_squared_feature_selection(X_train, y_train_norm, X_test, y_test_norm, **kwargs)
-    elif feature_selection == 'lasso':
-        res = lasso_feature_selection(X_train, y_train_norm, X_test, y_test_norm, **kwargs)
-    elif feature_selection == 'shap':
-        # Extract and remove explicit args for shap_feature_selection
-        threads = kwargs.pop('thread_count', kwargs.pop('threads', 4))
-        num_features = kwargs.pop('num_features', 50)
-        compute_interactions = kwargs.pop('compute_shap_interactions', False)
-        return_interactions = kwargs.pop('return_interactions', False)
-        res = shap_feature_selection(X_train, y_train_norm, X_test, y_test_norm, num_features, threads, compute_interactions=compute_interactions, **kwargs)
-        # Always return only 3 values unless explicitly requested
-        if len(res) == 4:
-            if return_interactions:
-                return (*res, y_train_norm, y_test_norm)  # (X_train_sel, X_test_sel, cols, interaction_values, y_train_norm, y_test_norm)
-            else:
-                return (*res[:3], y_train_norm, y_test_norm)  # (X_train_sel, X_test_sel, cols, y_train_norm, y_test_norm)
-        else:
-            return (*res, y_train_norm, y_test_norm)  # Already 3-tuple
-    else:
-        res = (X_train, X_test, X_train.columns.tolist())
-        return (*res, y_train_norm, y_test_norm)
+    y_tr_n, y_te_n = y_train, y_test
     
-    # Prune features that fail permutation tests across batches
-    # Only applies if not already returned above (for non-shap, non-early return)
-    if feature_selection not in ['shap']:
-        X_tr_s, X_te_s, sel = res
-        if kwargs.get('use_permutation_importance', True) and len(sel) > 1:
-            logger.info("Computing Permutation Importance across isolated batches...")
-            m_cls = CatBoostClassifier if kwargs.get('task_type') == 'Classification' else CatBoostRegressor
-            pm = m_cls(iterations=500, verbose=False).fit(X_tr_s, y_train_norm, eval_set=(X_te_s, y_test_norm))
-            p_i = permutation_importance(pm, X_te_s.values, y_test_norm, n_repeats=10, random_state=42)
-            f_sel = pd.Series(p_i['importances_mean'], index=sel)[lambda x: x > 0].index.tolist()
-            if f_sel:
-                return X_tr_s[f_sel], X_te_s[f_sel], f_sel, y_train_norm, y_test_norm
-        return X_tr_s, X_te_s, sel, y_train_norm, y_test_norm
+    # 🚨 VIP PASS: Extract Categorical Columns upfront so we can protect them
+    cat_features_names = []
+    if hasattr(X_train, 'columns'):
+        cat_features_names = X_train.select_dtypes(exclude=['number']).columns.tolist()
+    
+    # Label Normalization
+    if task_type == 'Classification':
+        u = np.unique(y_train)
+        if len(u) == 2 and not (set(u) == {0, 1}):
+            y_tr_n = (y_train == u.max()).astype(int)
+            y_te_n = (y_test == u.max()).astype(int)
+
+    # 1. Multicollinearity Filter (Pre-selection)
+    out_dir = Path(kwargs.get('output_dir', '.'))
+    if kwargs.get('filter_correlation', True):
+        keep = filter_multicollinear_features(
+            X_train, y_tr_n, threshold=kwargs.get('correlation_threshold', 0.95),
+            task_type=task_type, recover_best=kwargs.get('recover_features', True), out_dir=out_dir
+        )
+        # Ensure categorical columns survive correlation filtering
+        for c in cat_features_names:
+            if c not in keep:
+                keep.append(c)
+        X_tr_p, X_te_p = X_train[keep], X_test[keep]
+    else:
+        X_tr_p, X_te_p = X_train, X_test
+
+    # Calculate CatBoost Indices
+    cat_features_indices = []
+    if hasattr(X_tr_p, 'columns'):
+        cat_features_indices = [X_tr_p.columns.get_loc(c) for c in cat_features_names]
+
+    # 2. Algorithm Routing
+    num_f = kwargs.get('num_features', 50)
+
+    if feature_selection == 'rfe':
+        if task_type == 'Classification':
+            m = CatBoostClassifier(iterations=500, verbose=False, cat_features=cat_features_indices)
+        else:
+            m = CatBoostRegressor(iterations=500, verbose=False, cat_features=cat_features_indices)
+        sel_proc = RFE(estimator=m, n_features_to_select=min(num_f, X_tr_p.shape[1]), step=5).fit(X_tr_p, y_tr_n) # type: ignore
+        sel = X_tr_p.columns[sel_proc.support_].tolist()
+
+    elif feature_selection == 'select_k_best':
+        func = f_classif if task_type == 'Classification' else f_regression
+        num_cols = [c for c in X_tr_p.columns if c not in cat_features_names]
+        sel_proc = SelectKBest(score_func=func, k=min(num_f, len(num_cols))).fit(X_tr_p[num_cols], y_tr_n)
+        sel = X_tr_p[num_cols].columns[sel_proc.get_support()].tolist()
+
+    elif feature_selection == 'chi_squared':
+        num_cols = [c for c in X_tr_p.columns if c not in cat_features_names]
+        if (X_tr_p[num_cols] < 0).any().any(): raise ValueError("Chi2 requires non-negative count data.")
+        sel_proc = SelectKBest(score_func=chi2, k=min(num_f, len(num_cols))).fit(X_tr_p[num_cols], y_tr_n)
+        sel = X_tr_p[num_cols].columns[sel_proc.get_support()].tolist()
+
+    elif feature_selection == 'lasso':
+        num_cols = [c for c in X_tr_p.columns if c not in cat_features_names]
+        l = LogisticRegression(penalty='l1', solver='liblinear', random_state=42).fit(X_tr_p[num_cols], y_tr_n)
+        sel_proc = SelectFromModel(l, max_features=num_f, prefit=True)
+        sel = X_tr_p[num_cols].columns[sel_proc.get_support()].tolist()
+
+    elif feature_selection == 'shap':
+        m = CatBoostClassifier(iterations=500, verbose=False, cat_features=cat_features_indices).fit(X_tr_p, y_tr_n)
+        explainer = shap.TreeExplainer(m)
+        v = explainer.shap_values(X_tr_p.sample(min(1000, len(X_tr_p))))
+        if isinstance(v, list): v = v[-1]
+        elif v.ndim == 3: v = v[:, :, 1]
+        idx = np.argsort(np.abs(v).mean(axis=0))[-num_f:]
+        sel = X_tr_p.columns[idx].tolist()
+    else:
+        sel = X_tr_p.columns.tolist()
+
+    # 🚨 VIP PASS: Re-inject categorical targets if the selector deleted them
+    for cat_col in cat_features_names:
+        if cat_col not in sel:
+            sel.append(cat_col)
+
+    # 3. Final Permutation Pruning (Safety Valve)
+    if kwargs.get('use_permutation_importance', True) and len(sel) > 1:
+        X_tr_sel = X_tr_p[sel]
+        X_te_sel = X_te_p[sel]
+        
+        final_cat_indices = [X_tr_sel.columns.get_loc(c) for c in cat_features_names if c in X_tr_sel.columns]
+
+        pm = CatBoostClassifier(iterations=500, verbose=False, cat_features=final_cat_indices).fit(X_tr_sel, y_tr_n)
+        p_i = permutation_importance(pm, X_te_sel, y_te_n, n_repeats=5, random_state=42)
+        
+        # Keep features with positive importance OR if they are our categorical batch ID
+        sel = [f for f, imp in zip(sel, p_i['importances_mean']) if imp > 0 or f in cat_features_names]
+
+    # Final ultimate safety check before returning
+    for cat_col in cat_features_names:
+        if cat_col not in sel:
+            sel.append(cat_col)
+
+    return X_train[sel], X_test[sel], sel, y_tr_n, y_te_n

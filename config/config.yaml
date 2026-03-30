@@ -9,15 +9,19 @@ paths:
   # Base directory for the project
   base: "/usr2/people/macgregor/amplicon/" 
   # Output directory for the project
+  # Override with environment variable: WORKFLOW_16S_PROJECT_DIR
   project: "/usr2/people/macgregor/amplicon/project_01" 
   # Path to the directory containing your BLAST database
   blast_db: "/usr2/people/macgregor/blast_db/SILVA_16S_db" 
   # Path to the VSEARCH database
   vsearch_db: "/usr2/people/macgregor/blast_db/silva_nr99.udb"
   # Path to the QIIME2 classifier directory
-  classifier: "/usr2/people/macgregor/amplicon/workflow_16s/resources/classifier/silva-138-99-515-806"
+  classifier: "/usr2/people/macgregor/amplicon/workflow_16s/resources/classifier/silva-138-99-515-806/SILVA138.2_SSURef_NR99_uniform_classifier_full-length.qza"
   # Path to the QIIME2 phylogeny directory
   phylogeny: "/usr2/people/macgregor/amplicon/workflow_16s/resources/phylogeny/gg-2022-10-ssu-nr99"
+  backbone: "/usr2/people/macgregor/amplicon/workflow_16s/resources/sepp/2022.10.backbone.full-length.fna.qza"
+  reference_tree: "/usr2/people/macgregor/amplicon/workflow_16s/resources/sepp/gg2-2022.10-sepp-ref.qza" # Path to the SEPP reference tree artifact
+  reference_taxonomy: "/usr2/people/macgregor/amplicon/workflow_16s/resources/sepp/gg2-2022.10-taxonomy.qza"
   # Directory containing manually collected metadata
   manual_metadata: "/usr2/people/macgregor/manual_metadata"
   # List of datasets
@@ -92,13 +96,76 @@ credentials:
   #ieee_api_key: "" # IEEE API key (optional, for publication fetching)
   mendeley_api_key: "weJd5aHPGV6Cv26I" # Mendeley API key (optional, for publication fetching)"
   #dimensions_api_key: "" # Dimensions API key (optional, for publication fetching)"
-
+  ncdc_cdo_api_key: "NDcZUuDZMpffDYrkvfFgaisoAeIdoSBP" # NOAA CDO API key (optional, for climate data fetching)
+  nasa_eonet_api_key: "c10l8nuzbmrbdlLokydOAQ5PEsLK4nlzeZDeSV41" # NASA EONET API key (optional, for environmental event data fetching)
+  nasa_earth_imagery_api_key: "xGoZJpMQDJ0imwR6HqcUAQVJ6IZL1xWEmzVGSQTH" # NASA Earth Imagery API key (optional, for satellite imagery fetching)
+  cds_api_key: "8958654e-fac6-4e39-b32b-41179671c932" # Copernicus Climate Data Store API key (optional, for climate data fetching)
+  usgs_water_data_api_key: "Be137y5WtThT0JC9ugAeSKmYwyP1dQnVfI8nYFFa" # USGS Water Data API key (optional, for hydrological data fetching)
+  opentopography_api_key: "913d7668c6f68d13aa7c4a5ebcbde0e3" # OpenTopography API key (optional, for elevation, DEMs (SRTM, NASADEM, COP30) data fetching)
+  nasa_earth_observatory_api_key: "eyJ0eXAiOiJKV1QiLCJvcmlnaW4iOiJFYXJ0aGRhdGEgTG9naW4iLCJzaWciOiJlZGxqd3RwdWJrZXlfb3BzIiwiYWxnIjoiUlMyNTYifQ.eyJ0eXBlIjoiVXNlciIsInVpZCI6ImhtYWNncmVnb3IiLCJleHAiOjE3NzkzODQ1NjAsImlhdCI6MTc3NDIwMDU2MCwiaXNzIjoiaHR0cHM6Ly91cnMuZWFydGhkYXRhLm5hc2EuZ292IiwiaWRlbnRpdHlfcHJvdmlkZXIiOiJlZGxfb3BzIiwiYWNyIjoiZWRsIiwiYXNzdXJhbmNlX2xldmVsIjozfQ.TFkzEtasHTfgbDMEOStAjkYwVU7BhvYuriiQ35IXJVsgQpWKAFB7HLXXV6R9e7xWk-YA216IvIeKiGOflFJtx-JNRLGm-kJgmYrlYLnESqspySImfdm4nn3Ia46PECdO3b9fsl0itNCLiNjWcPRad_8zFmp6oJwcHoPHypZkskxJUW80eISNpHq06XNhiv5QUnt8i1Kr8r0QRdVOL6K3WNURC8UpetI9bDjJvd5DjqiqCvgEOzWn6Vx8zwBV8R79DmJHRdNfq1iv-dneUymAhIiID4IAd7Ln-g7b98gpmoflK7WZ-mFTTpCAs6i_c1IJsTsiHn8XcE0ltNmEiT2eQA" # NASA Earth Observatory API key (optional, for satellite imagery fetching)
+  #Expires at 05-21-2026
 # ===================================================================
 # UPSTREAM
 # ===================================================================
 
-upstream: 
-  enabled: False
+# 16S Primer/Target Logic
+# Set to 'any' to allow the orchestrator to process any discovered region (V4, V3-V4, etc.)
+# The PartitionProcessor will automatically group these into separate tables.
+sample_discovery:
+  enabled: true
+  n_threads: 16
+  maps: True
+  target_restriction: "any"  # <-- Allows V1-V9, any primers
+  min_samples_per_study: 15
+  
+  # Define your NFC-specific hunt here
+  requested_environments:
+    - name: "Nuclear_Industrial"
+      keywords: 
+        - "nuclear power plant"
+        - "radioactive waste"
+        - "uranium mine"
+        - "radionuclide"
+        - "nuclear"
+        - "uranium"
+        - "reprocessing"
+    - name: "Extreme_Environmental"
+      keywords:
+        - "arid soil"
+        - "alkaline water"      # Often relevant to specific mining tailing environments
+      biome_ids: 
+        - "ENVO:01000155" # Human-influenced environment (optional)
+    - name: "Metal_Contaminated"
+      keywords:
+        - "heavy metal"
+        - "arsenic"
+        - "copper"
+        - "cadmium"
+        - "mercury"
+        - "lead contamination"
+        - "mine tailings"
+        - "acid mine drainage"
+        - "metallophyte"         # Plants that thrive in high-metal soils
+        - "heavy metal stress"
+        - "industrial effluent"
+      biome_ids:
+        - "ENVO:01000676" # Antropogenic environmental entity
+        - "ENVO:00000108" # Mine drainage
+  osm_features:
+    - key: "industrial"
+      value: "mine"
+    - key: "landuse"
+      value: "quarry"
+    - key: "man_made"
+      value: "tailings_pond" # 🟢 HIGH PRIORITY for metal microbes
+  
+# Upstream Agent Settings
+upstream:
+  use_publication_cache: true
+  max_parallel_metadata_fetch: 10  # <-- Matches our new Network Semaphore limit
+  arkin_agents:
+    enabled: true
+    llm_model: "gpt-4-turbo"
 
 upload_anndata_to_zenodo:
   enabled: True
@@ -111,11 +178,12 @@ nfc_facilities:
   enabled: True
   use_cache: True # Use cached facility data if available
   use_local: True # Use local facility data if available
-  databases: ["DNFSB", "MinDat", "GEM", "NFCIS"] # Databases to query for facilities
+  databases: ["DNFSB", "MinDat", "GEM", "NFCIS", "iaea", "jrc", "nrc", "wna", "osm"] # Databases to query for facilities
   fetch_nearby_samples: True # Fetch samples near matched facilities
-  max_distance_km: 50 # Max distance to fetch nearby samples
+  include_controls: True # Include control samples in nearby sample fetching
+  max_distance_km: 5 # Max distance to fetch nearby samples
   match_existing_samples: True # Match facilities to existing samples in the metadata
-  distance_threshold_km: 5 # Max distance to consider a match
+  distance_threshold_km: 2 # Max distance to consider a match
   facility_match_column: "facility_match" # Metadata column to store facility match results
   facility_distance_column: "facility_distance_km" # Metadata column to store facility distance results
   facility_name_column: "facility_name" # Metadata column to store facility name results
@@ -125,6 +193,7 @@ nfc_facilities:
   facility_lon_column: "facility_longitude" # Metadata column to store facility longitude results
   maps: True # Generate maps of facilities and sample locations
   geocoding_sleep_seconds: 1.0 # Minimum seconds to wait between geocoding requests (Nominatim recommends >=1.0)
+  min_samples_per_study: 25
 
 # -------------------------------------------------------------------
 # SEQUENCE PROCESSING
@@ -209,12 +278,12 @@ qiime2: # QIIME
       chimera_method: "consensus"
       denoise_algorithm: "DADA2"
     taxonomy:
-      classifier_dir: "../resources/classifier/silva-138-99-515-806" 
-      classifier: "silva-138-99-515-806"
-      classify_method: "sklearn"
+      classify_method: "gg2"
       confidence: 0.7
     filter:
       retain_threshold: 80
+    diversity:
+      enabled: False # Not recommended to run per-datasetS
   meta_analysis:
     script_path: "../src/workflow_16s/api/qiime/phylogenetic_metaanalysis.py"
     hard_rerun: False
@@ -230,6 +299,8 @@ clean_fastq:
 downstream: 
   enabled: False
   find_subsets: False
+  batch_size: 10
+  load_existing: True
 
 # The metadata column that defines categorical groups of samples
 group_column: "nuclear_contamination_status" 
@@ -249,7 +320,7 @@ preprocessing:
     # Minimum fraction of samples that must have non-null values (0.0-1.0)
     min_fullness: 0.4  # e.g., 0.4 = column must have values for ≥40% of samples
     # Minimum absolute number of samples that must have non-null values
-    min_samples: 100  # e.g., column must have ≥100 samples with values
+    min_samples: 1  # e.g., column must have ≥100 samples with values
     # Maximum number of unique categories for categorical variables
     max_categories: 50  # Columns with >50 categories are excluded from categorical analysis
     # Standardize all date/timestamp columns to ISO format (YYYY-MM-DD)

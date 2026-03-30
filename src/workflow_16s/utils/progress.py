@@ -1,17 +1,18 @@
-# ===================================== IMPORTS ====================================== #
+# workflow_16s/src/workflow_16s/utils/progress.py
 
-# Standard Library Imports
 from datetime import timedelta
 from typing import Optional
 
-# Third-Party Imports
 from rich.progress import (
-    BarColumn, Progress, ProgressColumn, SpinnerColumn, Task, TextColumn, 
+    BarColumn, 
+    Progress, 
+    ProgressColumn, 
+    SpinnerColumn, 
+    Task, 
+    TextColumn, 
 )
 from rich.table import Column
 from rich.text import Text
-
-# ============================== CUSTOM PROGRESS COLUMNS ============================= #
 
 # See supported colors at: https://www.w3schools.com/colors/colors_x11.asp
 
@@ -58,8 +59,12 @@ class TimeElapsedColumn(ProgressColumn):
 class TimeRemainingColumn(ProgressColumn):
     """Renders estimated time remaining."""
     max_refresh = 0.5 # Only refresh twice a second to prevent jitter
-    def __init__(self, compact: bool = False, elapsed_when_finished: bool = False,
-                 table_column: Optional[Column] = None,):
+    def __init__(
+        self, 
+        compact: bool = False, 
+        elapsed_when_finished: bool = False,
+        table_column: Optional[Column] = None,
+    ):
         self.compact = compact
         self.elapsed_when_finished = elapsed_when_finished
         super().__init__(table_column=table_column)
@@ -89,8 +94,11 @@ class TaskDescriptionColumn(ProgressColumn):
     """A column for rendering the task description using a custom format."""
     def render(self, task: "Task") -> Text:
         """Render the task description by calling the formatting function."""
-        return Text.from_markup(_format_task_desc(task.description), 
-                                style=DEFAULT_DESCRIPTION_STYLE, justify="left")
+        return Text.from_markup(
+            _format_task_desc(task.description), 
+            style=DEFAULT_DESCRIPTION_STYLE, 
+            justify="left"
+        )
 
 
 # ===================================== FUNCTIONS ==================================== #
@@ -102,16 +110,32 @@ def _format_task_desc(desc: str) -> str:
 
 def get_progress_bar(transient: bool = False) -> Progress:
     """Return a customized progress bar with consistent styling"""
-    return Progress(SpinnerColumn("dots", style=DEFAULT_BAR_COLUMN_COMPLETE_STYLE, speed=0.75),
-                    TaskDescriptionColumn(),
-                    MofNCompleteColumn(),
-                    BarColumn(bar_width=DEFAULT_BAR_WIDTH, style="black", 
-                              complete_style=DEFAULT_BAR_COLUMN_COMPLETE_STYLE,
-                              finished_style=DEFAULT_FINISHED_STYLE),
-                    TextColumn("[progress.percentage]{task.percentage:>3.0f}%".rjust(5),
-                               style=DEFAULT_PROGRESS_PERCENTAGE_STYLE, justify="right"),
-                    TextColumn("E".rjust(2), style=DEFAULT_TIME_ELAPSED_STYLE, justify="right"),
-                    TimeElapsedColumn(),
-                    TextColumn("R".rjust(2), style=DEFAULT_TIME_REMAINING_STYLE, justify="right"),
-                    TimeRemainingColumn(),
-                    transient=transient, expand=False)
+    return Progress(
+        SpinnerColumn("dots", style=DEFAULT_BAR_COLUMN_COMPLETE_STYLE, speed=0.75),
+        TaskDescriptionColumn(),
+        MofNCompleteColumn(),
+        BarColumn(
+            bar_width=DEFAULT_BAR_WIDTH, style="black", 
+            complete_style=DEFAULT_BAR_COLUMN_COMPLETE_STYLE,
+            finished_style=DEFAULT_FINISHED_STYLE
+        ),
+        TextColumn(
+            "[progress.percentage]{task.percentage:>3.0f}%".rjust(5),
+            style=DEFAULT_PROGRESS_PERCENTAGE_STYLE, 
+            justify="right"
+        ),
+        TextColumn(
+            "E".rjust(2), 
+            style=DEFAULT_TIME_ELAPSED_STYLE, 
+            justify="right"
+        ),
+        TimeElapsedColumn(),
+        TextColumn(
+            "R".rjust(2), 
+            style=DEFAULT_TIME_REMAINING_STYLE, 
+            justify="right"
+        ),
+        TimeRemainingColumn(),
+        transient=transient,
+        expand=False
+    )

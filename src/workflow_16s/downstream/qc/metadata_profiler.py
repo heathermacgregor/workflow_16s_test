@@ -32,16 +32,18 @@ logger = logging.getLogger('workflow_16s')
 
 
 def calculate_entropy(series: pd.Series) -> float:
-    """Calculate Shannon entropy for categorical distribution."""
+    """Calculates Shannon entropy for categorical distribution."""
     counts = series.value_counts()
     probs = counts / counts.sum()
     return -np.sum(probs * np.log2(probs + 1e-10))
 
-
+# from workflow_16s.modules.machine_learning import detect_confounding
 def detect_confounding(adata: AnnData, col1: str, col2: str, threshold: float = 0.95) -> float:
     """
     Detect potential confounding between two categorical variables.
-    Returns: Cramér's V statistic (0-1, higher = stronger association)
+    Returns Cramér's V statistic (0-1, higher = stronger association).
+    Uses a contingency table and chi-squared test to calculate Cramér's V.
+    If Cramér's V is above the threshold, it indicates strong confounding.
     """
     try:
         obs = adata.obs[[col1, col2]].dropna()

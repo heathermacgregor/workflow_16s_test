@@ -1,3 +1,5 @@
+# workflow_16s/metadata/enrichment.py
+# TODO: Get rid of this if it's deprecated and not used anywhere
 # ===================================== IMPORTS ====================================== #
 
 # Standard Imports
