@@ -2,6 +2,7 @@
 
 import requests
 from typing import Any, Dict, Optional
+from datetime import datetime
 
 from .base import BaseEnvironmentalAPI, REQUEST_TIMEOUT
 from .cache import cache_api_call
@@ -13,6 +14,26 @@ logger = get_logger(__name__)
 # Track if we've already logged informational warnings to avoid repetition per-location
 _warning_international_logged = False
 _us_service_area_warning_logged = False
+
+
+def _normalize_fetch_date(fetch_date: Optional[Any]) -> Optional[str]:
+    """Normalize a date-like value to YYYY-MM-DD for consistent handling.
+
+    Returns None for empty/invalid values (including nan-like strings).
+    """
+    if fetch_date is None:
+        return None
+
+    text = str(fetch_date).strip()
+    if not text or text.lower() in {"nan", "none", "nat"}:
+        return None
+
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
 
 def _is_us_location(lat: float, lon: float) -> bool:
     """
@@ -65,14 +86,21 @@ class NWS_API(BaseEnvironmentalAPI):
         self.verbose = verbose
         super().__init__(verbose=self.verbose)
         self.base_url = self.URL
+        # NWS points/forecast endpoints are current-state queries; date does not
+        # alter the response and should not fragment cache keys.
+        self.cache_key_exclude_kwargs.update({"fetch_date", "date", "collection_date"})
         self.session.headers.update({'User-Agent': f'(Environmental Data Script, {email})'})
     
     @cache_api_call
-    def get_data(self, lat: float, lon: float) -> Optional[Dict[str, Any]]: # type: ignore
+    def get_data(self, lat: float, lon: float, fetch_date: Optional[Any] = None) -> Optional[Dict[str, Any]]: # type: ignore
         """Retrieves the NWS weather forecast for a specific lat/lon.
         
         Returns None if location is outside NWS coverage area (continental US, Alaska, Hawaii).
         """
+        normalized_date = _normalize_fetch_date(fetch_date)
+        if fetch_date is not None and normalized_date is None and self.verbose:
+            logger.debug("NWS fetch_date is invalid or missing; ignoring date filter")
+
         # Check if location is in NWS coverage area
         if not _is_us_location(lat, lon):
             if self.verbose: logger.debug(f"⊘ Location ({lat}, {lon}) is outside NWS coverage area (US only)")
@@ -118,15 +146,20 @@ class SevereWeatherAPI(BaseEnvironmentalAPI):
         super().__init__(verbose=verbose)
         self.base_url = self.URL
         self.verbose = verbose
+        self.cache_key_exclude_kwargs.update({"fetch_date", "date", "collection_date"})
         self.session.headers.update({'User-Agent': f'(Environmental Data Script, {email})'})
     
     @cache_api_call
-    def get_data(self, lat: float, lon: float) -> Optional[Dict[str, Any]]: # type: ignore
+    def get_data(self, lat: float, lon: float, fetch_date: Optional[Any] = None) -> Optional[Dict[str, Any]]: # type: ignore
         """Retrieves active NWS alerts for a location.
         
         Returns None if location is outside NWS coverage area (continental US, Alaska, Hawaii).
         """
         global _warning_international_logged, _us_service_area_warning_logged
+
+        normalized_date = _normalize_fetch_date(fetch_date)
+        if fetch_date is not None and normalized_date is None and self.verbose:
+            logger.debug("SevereWeather fetch_date is invalid or missing; ignoring date filter")
         
         # Check if location is in NWS coverage area
         if not _is_us_location(lat, lon):

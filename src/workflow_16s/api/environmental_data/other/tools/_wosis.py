@@ -88,6 +88,9 @@ class WoSISAPI(BaseEnvironmentalAPI):
         self.search_radius_km = search_radius_km
         self.enable_fallback = enable_fallback
         self.timeout = REQUEST_TIMEOUT
+        # WoSIS endpoint is spatial-only; fetch_date is accepted for interface
+        # compatibility but not used in the request itself.
+        self.cache_key_exclude_kwargs.update({"fetch_date", "date", "collection_date"})
         self.logger = get_logger(__name__)
 
     def check_requirements(self) -> Tuple[bool, Optional[str]]:

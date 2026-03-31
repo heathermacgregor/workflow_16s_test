@@ -16,7 +16,8 @@ from skbio.stats.ordination import pcoa
 from workflow_16s.downstream.diversity.beta.plotting import plot_ordination
 from workflow_16s.downstream.diversity.beta.statistical_tests import (
     run_mantel_parallel,
-    run_permanova_parallel
+    run_permanova_parallel,
+    apply_stratified_fdr
 )
 from workflow_16s.utils.logger import get_logger
 
@@ -115,6 +116,12 @@ def process_distance_matrix(
         for r in m_results:
             if r:
                 mantel_results[r[0]] = r[1]
+
+    # **P3 CRITICAL FIX: Apply stratified FDR correction across all tests**
+    # This prevents alpha inflation when testing 3-5 distance metrics × 10-20 metadata variables
+    permanova_results, mantel_results, stats_summary = apply_stratified_fdr(
+        permanova_results, mantel_results, correction_method='fdr_by', alpha=0.05
+    )
 
     # Generate ordination plots
     return plot_ordination(

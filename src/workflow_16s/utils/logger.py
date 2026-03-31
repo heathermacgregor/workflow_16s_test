@@ -62,7 +62,7 @@ def setup_logging(
     log_dir_path: Union[str, Path], 
     log_filename: Union[str, None] = None,
     max_file_size: int = 5 * 1024 * 1024,  # 5 MB
-    backup_count: int = 3, 
+    backup_count: int = 10, 
     console_level: int = logging.INFO, 
     file_level: int = logging.DEBUG,
     quiet_init: bool = False

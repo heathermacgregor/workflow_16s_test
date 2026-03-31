@@ -157,6 +157,34 @@ def get_config_val(config, section, key, default) -> Any:
         return default
 
 
+def get_config_section(config, section, default=None) -> Any:
+    """Return a full config section as a dict when possible."""
+    if default is None:
+        default = {}
+    try:
+        if isinstance(config, dict):
+            section_obj = config.get(section, default)
+        elif hasattr(config, section):
+            section_obj = getattr(config, section)
+        else:
+            return default
+
+        if isinstance(section_obj, dict):
+            return section_obj
+        if hasattr(section_obj, "model_dump"):
+            return section_obj.model_dump()
+        if hasattr(section_obj, "dict"):
+            return section_obj.dict()
+        if hasattr(section_obj, "__dict__"):
+            return {
+                k: v for k, v in vars(section_obj).items()
+                if not k.startswith("_")
+            }
+        return default
+    except Exception:
+        return default
+
+
 def _resolve_gee_service_account_path(config: Any, logger=None) -> Optional[Path]:
     """Resolve GEE service account path from config, env vars, and common paths."""
     candidates = []
@@ -342,22 +370,43 @@ async def _run_gee_enrichment_phase(workflow, logger):
     """Async wrapper for GEE enrichment phase - can run in parallel with Environmental."""
     workflow.telemetry.start_phase('backfill_gee')
     try:
-        # Check if GEE is enabled AND has enabled datasets
+        # Check if GEE is enabled; dataset selection is handled by GEE internals.
         gee_enabled = getattr(workflow, 'is_gee_enabled', False)
-        gee_config = get_config_val(workflow.config, 'gee_assets', {}, {})
+        gee_config = get_config_section(workflow.config, 'gee_assets', {})
+        gee_assets_enabled = bool(get_config_val(workflow.config, 'gee_assets', 'enabled', True))
 
-        # Check if any GEE assets are explicitly enabled
-        datasets_enabled = False
+        # Best-effort dataset discovery for logging only (do not gate execution).
         enabled_datasets = []
         if isinstance(gee_config, dict):
+            # Legacy flat shape under gee_assets (e.g., gee_assets.jrc_water.enabled)
             for key in ['jrc_water', 'viirs_nighttime', 'hansen_gfc', 'dem', 'era5', 'worldcover', 'modis']:
-                if gee_config.get(key, {}).get('enabled', False):
-                    datasets_enabled = True
+                value = gee_config.get(key)
+                if isinstance(value, dict) and value.get('enabled', False):
+                    enabled_datasets.append(key)
+                elif isinstance(value, bool) and value:
                     enabled_datasets.append(key)
 
-        # Only proceed if BOTH gee_enabled is True AND at least one dataset is enabled
-        if gee_enabled and datasets_enabled:
-            logger.info(f" 🌍 Running GEE-based environmental enrichment ({len(enabled_datasets)} datasets enabled: {', '.join(enabled_datasets)})...")
+            # Modern nested shape under gee_assets.datasets
+            datasets_cfg = gee_config.get('datasets', {})
+            if isinstance(datasets_cfg, dict):
+                for name, cfg in datasets_cfg.items():
+                    if isinstance(cfg, dict) and cfg.get('enabled', False):
+                        enabled_datasets.append(name)
+                    elif isinstance(cfg, bool) and cfg:
+                        enabled_datasets.append(name)
+
+        enabled_datasets = sorted(set(enabled_datasets))
+
+        # Proceed when workflow-level GEE and gee_assets master toggle are enabled.
+        if gee_enabled and gee_assets_enabled:
+            if enabled_datasets:
+                logger.info(
+                    f" 🌍 Running GEE-based environmental enrichment ({len(enabled_datasets)} datasets detected: {', '.join(enabled_datasets)})..."
+                )
+            else:
+                logger.info(
+                    " 🌍 Running GEE-based environmental enrichment (dataset toggles will be resolved by GEE internals)..."
+                )
             try:
                 lat_col, lon_col = find_coordinate_columns(workflow.adata.obs)
                 if lat_col and lon_col:
@@ -394,9 +443,10 @@ async def _run_gee_enrichment_phase(workflow, logger):
                             use_cache=True,
                             async_mode=async_mode,
                             use_mega_image=use_mega_image,
-                            gee_config=get_config_val(workflow.config, 'gee_assets', {}, {}),
+                            gee_config=gee_config,
                             gcs_bucket=gcs_bucket,
                             wait_for_completion=True,
+                            show_progress=False,
                             logger_instance=logger
                         )
                         # Batch progress logging is handled internally by enrich_with_gee_data()
@@ -430,8 +480,8 @@ async def _run_gee_enrichment_phase(workflow, logger):
             skip_reasons = []
             if not gee_enabled:
                 skip_reasons.append("GEE not enabled (is_gee_enabled=False)")
-            if not datasets_enabled:
-                skip_reasons.append("No GEE datasets explicitly enabled in config")
+            if not gee_assets_enabled:
+                skip_reasons.append("gee_assets.enabled=False")
             reason = " AND ".join(skip_reasons)
             logger.info(f" ⊘ GEE enrichment skipped: {reason}")
     finally:

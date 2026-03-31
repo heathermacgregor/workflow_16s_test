@@ -135,6 +135,7 @@ from .tools.coordinate_sorting_utils import (
     log_sorting_plan,
     estimate_cache_improvement,
 )
+from .tools.constants import is_us_location, US_ONLY_APIS
 from .tools.cache import configure_environmental_cache_paths
 from .tools import (
     BaseEnvironmentalAPI,
@@ -410,9 +411,8 @@ class EnvironmentalDataCollector:
     def _initialize_apis(self) -> Dict[str, BaseEnvironmentalAPI]:
         """Initializes all API handlers using credentials from config."""
         email = str(self.config.credentials.email or "contact@example.com")
-        environmental_cfg = getattr(getattr(self.config, "apis", None), "environmental", None)
-        dataset_cfg = getattr(environmental_cfg, "datasets", None) if environmental_cfg is not None else None
-        soilgrids_enabled = getattr(dataset_cfg, "soilgrids", True) if dataset_cfg is not None else True
+        soilgrids_enabled = self._resolve_soilgrids_enabled()
+        mgnify_enabled = bool(getattr(self.config.apis.mgnify, "enabled", True))
         
         # Extract API keys from config
         ncdc_cdo_key = getattr(self.config.credentials, 'ncdc_cdo_api_key', None)
@@ -459,8 +459,8 @@ class EnvironmentalDataCollector:
                     'max_retries': self.config.apis.mgnify.max_retries,
                     'backoff_multiplier': self.config.apis.mgnify.backoff_multiplier
                 }
-            ),  # Metagenomics samples & metadata
-            "SoilGrids_Python": SoilGridsPythonAPI(verbose=self.verbose),  # High-res soil predictions
+            ) if mgnify_enabled else None,  # Metagenomics samples & metadata
+            "SoilGrids_Python": SoilGridsPythonAPI(verbose=self.verbose) if soilgrids_enabled else None,  # High-res soil predictions
             
             # ===== GOOGLE EARTH ENGINE MULTI-DATASET (IF AUTHENTICATED) =====
             "Google_Earth_Engine": GoogleEarthEngineAPI(
@@ -533,6 +533,110 @@ class EnvironmentalDataCollector:
             if is_ok: active[name] = handler
             else: self.skipped_handlers.append({"api": name, "reason": reason})
         return active
+
+    def _get_nested_config_value(
+        self, root: Any, keys: Tuple[str, ...], default: Any = None
+    ) -> Any:
+        """Safely retrieve nested config values from dict-like or attribute-like objects."""
+        current = root
+        for key in keys:
+            if current is None:
+                return default
+            if isinstance(current, dict):
+                if key not in current:
+                    return default
+                current = current[key]
+            else:
+                current = getattr(current, key, None)
+                if current is None:
+                    return default
+        return current
+
+    def _resolve_soilgrids_enabled(self) -> bool:
+        """Resolve SoilGrids toggle with backward-compatible config path support.
+
+        Precedence:
+        1. apis.environmental.datasets.soilgrids (current schema)
+        2. api.environmental.datasets.soilgrids (legacy alias)
+        3. ecological_insights.gradient.soilgrids.enabled (legacy/user-facing toggle)
+
+        Additional guard:
+        - ecological_insights.gradient.enrich_soil_data=False forces SoilGrids off.
+
+        Default: True (if no explicit toggle exists)
+        """
+        primary_path = ("apis", "environmental", "datasets", "soilgrids")
+        alias_path = ("api", "environmental", "datasets", "soilgrids")
+        legacy_path = (
+            "ecological_insights",
+            "gradient",
+            "soilgrids",
+            "enabled",
+        )
+        legacy_parent_path = (
+            "ecological_insights",
+            "gradient",
+            "enrich_soil_data",
+        )
+
+        primary_value = self._get_nested_config_value(self.config, primary_path)
+        alias_value = self._get_nested_config_value(self.config, alias_path)
+        legacy_value = self._get_nested_config_value(self.config, legacy_path)
+        legacy_parent_value = self._get_nested_config_value(self.config, legacy_parent_path)
+
+        if isinstance(legacy_parent_value, bool) and not legacy_parent_value:
+            self.logger.info(
+                "SoilGrids disabled by ecological_insights.gradient.enrich_soil_data=false"
+            )
+            return False
+
+        # Safety rule: any explicit False toggle disables SoilGrids.
+        # This avoids Pydantic default-True values accidentally re-enabling it.
+        explicit_false_toggles = []
+        if isinstance(primary_value, bool) and not primary_value:
+            explicit_false_toggles.append("apis.environmental.datasets.soilgrids")
+        if isinstance(alias_value, bool) and not alias_value:
+            explicit_false_toggles.append("api.environmental.datasets.soilgrids")
+        if isinstance(legacy_value, bool) and not legacy_value:
+            explicit_false_toggles.append("ecological_insights.gradient.soilgrids.enabled")
+
+        if explicit_false_toggles:
+            self.logger.info(
+                "SoilGrids disabled by explicit false toggle(s): %s",
+                ", ".join(explicit_false_toggles),
+            )
+            return False
+
+        if isinstance(primary_value, bool):
+            if isinstance(legacy_value, bool) and primary_value != legacy_value:
+                self.logger.warning(
+                    "Conflicting SoilGrids config toggles: "
+                    "apis.environmental.datasets.soilgrids=%s vs "
+                    "ecological_insights.gradient.soilgrids.enabled=%s. "
+                    "Using apis.environmental.datasets.soilgrids.",
+                    primary_value,
+                    legacy_value,
+                )
+            return primary_value
+
+        if isinstance(alias_value, bool):
+            self.logger.info(
+                "Using SoilGrids toggle at api.environmental.datasets.soilgrids=%s. "
+                "Prefer apis.environmental.datasets.soilgrids in config.",
+                alias_value,
+            )
+            return alias_value
+
+        if isinstance(legacy_value, bool):
+            self.logger.info(
+                "Using legacy SoilGrids toggle at "
+                "ecological_insights.gradient.soilgrids.enabled=%s. "
+                "Prefer apis.environmental.datasets.soilgrids in config.",
+                legacy_value,
+            )
+            return legacy_value
+
+        return True
 
     def run_apis(self) -> pd.DataFrame:
         """
@@ -656,8 +760,12 @@ class EnvironmentalDataCollector:
                 locations_completed = 0
                 import time
                 start_time = time.time()
+                recent_batch_durations = []
+                eta_warmup_batches = 5
+                last_progress_log_time = start_time
 
                 for batch_idx, location_batch in enumerate(location_batches):
+                    batch_start_time = time.time()
                     try:
                         # Process entire batch concurrently
                         batch_results = self._process_location_batch(
@@ -680,14 +788,24 @@ class EnvironmentalDataCollector:
 
                     # Update progress
                     locations_completed += len(location_batch)
+                    batch_duration = max(time.time() - batch_start_time, 0.001)
+                    recent_batch_durations.append(batch_duration)
+                    if len(recent_batch_durations) > 20:
+                        recent_batch_durations.pop(0)
 
                     # Calculate ETA
                     if locations_completed > 0:
-                        elapsed = time.time() - start_time
-                        time_per_batch = elapsed / (batch_idx + 1)
+                        completed_batches = batch_idx + 1
                         remaining_batches = total_batches - (batch_idx + 1)
-                        eta_seconds = int(time_per_batch * remaining_batches)
-                        eta_str = f"ETA {eta_seconds//60}m {eta_seconds%60}s" if eta_seconds > 0 else "Done"
+
+                        if remaining_batches == 0:
+                            eta_str = "Done"
+                        elif completed_batches < eta_warmup_batches:
+                            eta_str = f"ETA warming up ({completed_batches}/{eta_warmup_batches} batches)"
+                        else:
+                            avg_batch_seconds = sum(recent_batch_durations) / len(recent_batch_durations)
+                            eta_seconds = int(avg_batch_seconds * remaining_batches)
+                            eta_str = f"ETA {eta_seconds//60}m {eta_seconds%60}s" if eta_seconds > 0 else "Done"
                     else:
                         eta_str = "Computing..."
 
@@ -699,6 +817,37 @@ class EnvironmentalDataCollector:
                         ),
                         advance=len(location_batch)
                     )
+
+                    # Emit periodic ETA updates to logs so long runs can be monitored via tail/grep.
+                    if (
+                        batch_idx == 0
+                        or (batch_idx + 1) % 10 == 0
+                        or (time.time() - last_progress_log_time) >= 60
+                        or (batch_idx + 1) == total_batches
+                    ):
+                        elapsed_seconds = int(time.time() - start_time)
+                        self.logger.info(
+                            "Batch progress %s/%s | locations %s/%s | elapsed %sm %ss | %s",
+                            batch_idx + 1,
+                            total_batches,
+                            locations_completed,
+                            total_locations,
+                            elapsed_seconds // 60,
+                            elapsed_seconds % 60,
+                            eta_str,
+                        )
+                        last_progress_log_time = time.time()
+
+                elapsed_seconds = int(time.time() - start_time)
+                self.logger.info(
+                    "Batch progress %s/%s | locations %s/%s | elapsed %sm %ss | Done",
+                    total_batches,
+                    total_batches,
+                    total_locations,
+                    total_locations,
+                    elapsed_seconds // 60,
+                    elapsed_seconds % 60,
+                )
 
                 self.progress.remove_task(task)
                 self.logger.debug(f"PHASE 2 SUCCESS: All {total_batches} batches processed")
@@ -859,6 +1008,7 @@ class EnvironmentalDataCollector:
         """
         batch_results = {}
         batch_locations_meta = []  # Track location metadata for summary
+        cache_before = self._snapshot_cache_counters()
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             # Submit all locations in this batch for concurrent processing
@@ -914,11 +1064,23 @@ class EnvironmentalDataCollector:
                     })
 
         # Log batch-level summary report
+        cache_after = self._snapshot_cache_counters()
+        cache_delta = {
+            "hits": max(0, cache_after["hits"] - cache_before["hits"]),
+            "misses": max(0, cache_after["misses"] - cache_before["misses"]),
+        }
         self._create_batch_summary_report(
-            batch_idx, total_batches, batch_locations_meta, len(batch_results)
+            batch_idx, total_batches, batch_locations_meta, len(batch_results), cache_delta
         )
 
         return batch_results
+
+    def _snapshot_cache_counters(self) -> Dict[str, int]:
+        """Aggregate cache hit/miss counters across active API handlers."""
+        return {
+            "hits": sum(getattr(api, "cache_hits", 0) for api in self.active_handlers.values()),
+            "misses": sum(getattr(api, "cache_misses", 0) for api in self.active_handlers.values()),
+        }
 
     def _query_all_apis_for_location(
         self,
@@ -959,6 +1121,11 @@ class EnvironmentalDataCollector:
         for api_name, api_instance in self.active_handlers.items():
             # Google Earth Engine is handled via mega_image system separately
             if api_name == "Google_Earth_Engine":
+                location_stats['api_skipped'] += 1
+                continue
+
+            # Skip US-only APIs early for non-US coordinates to avoid unnecessary calls/log noise.
+            if api_instance.__class__.__name__ in US_ONLY_APIS and not is_us_location(lat, lon):
                 location_stats['api_skipped'] += 1
                 continue
 
@@ -1189,7 +1356,8 @@ class EnvironmentalDataCollector:
         batch_idx: int,
         total_batches: int,
         batch_locations_meta: List[Dict],
-        processed_locations: int
+        processed_locations: int,
+        cache_delta: Optional[Dict[str, int]] = None,
     ):
         """
         Create and log a batch-level summary report with environmental data dataframe.
@@ -1224,6 +1392,11 @@ class EnvironmentalDataCollector:
                 )
 
                 # Log summary statistics
+                cache_hits = int((cache_delta or {}).get('hits', 0))
+                cache_misses = int((cache_delta or {}).get('misses', 0))
+                cache_total = cache_hits + cache_misses
+                cache_hit_rate = (100.0 * cache_hits / cache_total) if cache_total > 0 else 0.0
+
                 self.logger.info(
                     f"\nSUMMARY STATISTICS:"
                     f"\n  Total locations: {total_locations}"
@@ -1231,6 +1404,7 @@ class EnvironmentalDataCollector:
                     f"\n  Total samples in batch: {total_samples}"
                     f"\n  API calls: Success {total_api_success} | Failed {total_api_failed} | Skipped {total_api_skipped}"
                     f"\n  Average API success rate: {avg_success_rate:.1f}%"
+                    f"\n  Cache (batch delta): hits {cache_hits} | misses {cache_misses} | hit rate {cache_hit_rate:.1f}%"
                 )
 
                 # Identify core columns and environmental data columns

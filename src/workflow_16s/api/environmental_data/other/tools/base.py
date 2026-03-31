@@ -34,6 +34,10 @@ class BaseEnvironmentalAPI(ABC):
         self.logger = get_logger("workflow_16s")  # Initialize logger instance
         self.base_url: str = ""
         self.api_name: str = self.__class__.__name__
+        # Optional list of kwargs to ignore when building cache keys.
+        # Useful when a kwarg is accepted for API consistency but not actually
+        # used by the underlying endpoint (e.g., fetch_date for non-temporal APIs).
+        self.cache_key_exclude_kwargs: set[str] = set()
         self.session: requests.Session = self._create_session_with_retries()
         # Initialized with a Path object for compatibility
         self.cache_manager = CacheManager(CACHE_DB_PATH.parent / self.api_name)

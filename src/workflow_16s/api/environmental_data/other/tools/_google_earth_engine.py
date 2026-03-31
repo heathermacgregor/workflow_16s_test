@@ -2388,6 +2388,7 @@ def enrich_with_gee_data(
     gcs_project: Optional[str] = None,
     gcs_output_dir: Optional[str] = None,
     wait_for_completion: bool = True,
+    show_progress: bool = True,
     logger_instance: Optional[Any] = None
 ) -> pd.DataFrame:
     """
@@ -2408,12 +2409,38 @@ def enrich_with_gee_data(
         gcs_project: GCP project ID (optional)
         gcs_output_dir: Local directory for result downloads
         wait_for_completion: Block until async tasks complete
+        show_progress: Show Rich progress bar during batch loop
         logger_instance: Custom logger instance
         
     Returns:
         Updated DataFrame with GEE-enriched columns
     """
     global logger
+
+    def _log_dataframe_preview(df: pd.DataFrame, label: str, rows: int = 10) -> None:
+        """Log a compact, human-readable DataFrame preview for post-run inspection."""
+        try:
+            logger.info(f"{label} shape: {df.shape[0]} rows x {df.shape[1]} columns")
+            if df.empty:
+                logger.info(f"{label} preview: <empty dataframe>")
+                return
+
+            preview = df.head(rows)
+            with pd.option_context(
+                "display.max_columns", 20,
+                "display.width", 180,
+                "display.max_colwidth", 40,
+            ):
+                preview_text = preview.to_string(index=False)
+            logger.info(
+                "%s preview (first %s rows):\n%s",
+                label,
+                min(rows, len(df)),
+                preview_text,
+            )
+        except Exception as preview_err:
+            logger.debug(f"Failed to pretty-print {label}: {preview_err}")
+
     if logger_instance is not None:
         logger = logger_instance
     
@@ -2450,108 +2477,124 @@ def enrich_with_gee_data(
         logger.error(f"Coordinate validation failed: {e}")
         return obs
     
-    # === MEGA-IMAGE MODE (EXPERIMENTAL) ===
-    if use_mega_image:
-        if gcs_bucket is None:
-            logger.warning("Mega-image requires gcs_bucket - falling back to standard mode")
-            use_mega_image = False
-        else:
-            try:
-                logger.info("→ MEGA-IMAGE MODE: Stacking datasets for parallel sampling")
-                logger.info(f"  GCS bucket: {gcs_bucket}")
-                logger.info(f"  Expected time: 50-60 minutes for 400K samples (20x faster)")
-                
-                # TODO: Implement mega-image export flow
-                # This requires GEE batch export infrastructure
-                logger.debug("  [FEATURE INCOMPLETE] Full mega-image implementation pending GEE batch setup")
-                
-            except Exception as e:
-                logger.warning(f"Mega-image mode failed ({type(e).__name__}): {e} - falling back to standard")
-                use_mega_image = False
-    
-    # === STANDARD MODE (FALLBACK) ===
-    if not use_mega_image:
-        logger.info("→ STANDARD MODE: Sequential batch sampling")
+    # Use in-module dataset clients directly so enrichment works even when optional
+    # external optimization modules are unavailable in this deployment.
+    try:
+        if use_mega_image:
+            logger.info("Mega-image requested; using stable in-module batched enrichment")
+        if async_mode:
+            logger.info("Async mode requested; using stable synchronous enrichment")
 
-        # Initialize cache if requested
         cache = GEECache() if use_cache else None
-        if use_cache:
-            logger.info(f"  ✓ Caching enabled (database: {CACHE_DB_PATH})" if cache else "  ℹ️  Cache unavailable")
+        sample_labels = obs.index[valid_indices].to_numpy()
+        valid_lats = lats[valid_indices]
+        valid_lons = lons[valid_indices]
 
-        # Apply spatial sorting for improved cache locality
-        logger.debug("→ Sorting coordinates for spatial locality (+10-15% cache hit rate)")
-        obs_subset = obs.iloc[valid_indices].copy()
-        obs_subset_sorted = sort_coordinates_by_space(obs_subset, sort_by='lon', chunk_size=batch_size)
-        sorted_indices = obs_subset_sorted.index.values
+        def _merge_results(results: Dict[Any, Dict[str, Any]], col_defaults: Dict[str, Any]) -> None:
+            for col, default in col_defaults.items():
+                if col not in obs.columns:
+                    obs[col] = default
+            for row_label, payload in results.items():
+                if not payload:
+                    continue
+                for key, value in payload.items():
+                    if key not in obs.columns:
+                        obs[key] = np.nan
+                    obs.at[row_label, key] = value
 
-        sorted_lats = lats[sorted_indices]
-        sorted_lons = lons[sorted_indices]
-
-        logger.debug(f"  ✓ Sorted {len(sorted_indices)} coordinates by longitude in chunks")
-
-        # ===== PHASE: BATCH PROCESSING WITH PROGRESS LOGGING =====
-        total_coords = len(sorted_indices)
-        total_batches = (total_coords + batch_size - 1) // batch_size  # Ceiling division
-
-        logger.info(
-            f"Processing {total_coords} coordinates in {total_batches} batches "
-            f"(batch size={batch_size})"
-        )
-
-        # Initialize progress bar for batch tracking
-        progress = get_progress_bar()
-        progress.start()
-        task = progress.add_task(
-            "[cyan]Enriching with GEE data...",
-            total=total_batches
-        )
-
-        coords_processed = 0
-        import time as time_module
-        start_time = time_module.time()
-
+        logger.info("→ JRC Global Surface Water (HIGH PRIORITY)")
         try:
-            for batch_idx in range(total_batches):
-                # Calculate batch bounds
-                batch_start = batch_idx * batch_size
-                batch_end = min(batch_start + batch_size, total_coords)
-                batch_coords_count = batch_end - batch_start
+            jrc_client = JRCGlobalSurfaceWaterAPI(authenticated=True)
+            jrc_results = batch_query_gee_asset(
+                valid_lats, valid_lons, sample_labels,
+                jrc_client.query_by_point,
+                batch_size=batch_size,
+                asset_name="JRC_Water",
+                cache=cache,
+                show_progress=show_progress,
+            )
+            _merge_results(
+                jrc_results,
+                {
+                    'jrc_water_occurrence_pct': np.nan,
+                    'jrc_water_seasonality_month': np.nan,
+                    'jrc_water_recurrence_pct': np.nan,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"  ✗ JRC enrichment failed: {e}")
 
-                coords_processed = batch_end
+        logger.info("→ VIIRS/DMSP Nighttime Lights (HIGH PRIORITY)")
+        try:
+            viirs_client = VIIRSNighttimeLightsAPI(authenticated=True)
+            viirs_results = batch_query_gee_asset(
+                valid_lats, valid_lons, sample_labels,
+                viirs_client.query_by_point,
+                batch_size=batch_size,
+                asset_name="VIIRS_Lights",
+                cache=cache,
+                show_progress=show_progress,
+            )
+            _merge_results(
+                viirs_results,
+                {
+                    'lights_radiance_nanoW_cm2_sr': np.nan,
+                    'lights_source': None,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"  ✗ VIIRS enrichment failed: {e}")
 
-                # Calculate ETA
-                if coords_processed > 0:
-                    elapsed = time_module.time() - start_time
-                    time_per_batch = elapsed / (batch_idx + 1)
-                    remaining_batches = total_batches - (batch_idx + 1)
-                    eta_seconds = int(time_per_batch * remaining_batches)
-                    eta_str = f"ETA {eta_seconds//60}m {eta_seconds%60}s" if eta_seconds > 0 else "Done"
-                else:
-                    eta_str = "Computing..."
+        logger.info("→ Hansen Global Forest Change")
+        try:
+            hansen_client = HansenGlobalForestChangeAPI(authenticated=True)
+            hansen_results = batch_query_gee_asset(
+                valid_lats, valid_lons, sample_labels,
+                hansen_client.query_by_point,
+                batch_size=batch_size,
+                asset_name="Hansen_GFC",
+                cache=cache,
+                show_progress=show_progress,
+            )
+            _merge_results(
+                hansen_results,
+                {
+                    'hansen_tree_cover_2000_pct': np.nan,
+                    'hansen_forest_loss_binary': np.nan,
+                    'hansen_forest_gain_pct': np.nan,
+                    'hansen_loss_year_calendar': np.nan,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"  ✗ Hansen enrichment failed: {e}")
 
-                # Update progress with batch details
-                progress.update(
-                    task,
-                    description=(
-                        f"[cyan]📦 Batch {batch_idx + 1}/{total_batches} "
-                        f"({coords_processed}/{total_coords} coords) — {eta_str}"
-                    ),
-                    advance=1
-                )
+        logger.info("→ Copernicus DEM")
+        try:
+            dem_client = CopernicusDEMAPI(authenticated=True)
+            dem_results = batch_query_gee_asset(
+                valid_lats, valid_lons, sample_labels,
+                dem_client.query_by_point,
+                batch_size=batch_size,
+                asset_name="Copernicus_DEM",
+                cache=cache,
+                show_progress=show_progress,
+            )
+            _merge_results(
+                dem_results,
+                {
+                    'elevation_m': np.nan,
+                    'slope_degrees': np.nan,
+                    'aspect_degrees': np.nan,
+                    'relief_class': None,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"  ✗ DEM enrichment failed: {e}")
+    except Exception as e:
+        logger.error(f"GEE production enrichment failed: {type(e).__name__}: {e}")
+        return obs
 
-                # TODO: Implement per-batch dataset queries
-                # This is where the actual GEE API calls will be made for this batch
-                # Current placeholder: This will be implemented in the next phase
-                logger.debug(
-                    f"  Batch {batch_idx + 1}/{total_batches}: Processing {batch_coords_count} coordinates "
-                    f"[indices {batch_start}:{batch_end}]"
-                )
-        finally:
-            progress.stop()
-
-        logger.info(f"  ✓ Completed {total_batches} batches of GEE enrichment")
-        logger.info("  Additional datasets disabled in current deployment")
-        logger.info("  TODO: Add JRC Water, VIIRS Lights, DEM, ERA5, Hansen, WorldCover, ISDASOIL")
+    _log_dataframe_preview(obs, "GEE enriched dataframe")
 
     return obs
 
