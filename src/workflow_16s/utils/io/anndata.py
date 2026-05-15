@@ -1,152 +1,20 @@
 # workflow_16s/utils/io/anndata.py
 
-import hashlib
-import io
-import os
-import pickle
-import re
-from pathlib import Path
-from typing import Any, List, Optional, Tuple
+#!/usr/bin/env python
+"""Compatibility shim.
 
-import anndata as ad
-import biom
-import numpy as np
-import pandas as pd
-import skbio
-import scanpy as sc
-from pandas.api.types import is_extension_array_dtype
-from scipy.sparse import issparse, csr_matrix
-from skbio import TreeNode
+This file used to contain implementation copied to `workflow_16s.core.io.anndata`.
+Keep this shim to preserve existing deep imports for one release cycle.
+"""
+import warnings
 
-from workflow_16s.config import AppConfig
-#from workflow_16s.downstream.utils.adata_biology import (
-#    filter_samples_and_features, parse_taxonomy
-#)
-from workflow_16s.utils.logger import get_logger
-# workflow_16s/downstream/utils/adata_biology.py
+warnings.warn(
+    "workflow_16s.utils.io.anndata has moved to workflow_16s.core.io.anndata; "
+    "please update imports to use the new path.",
+    DeprecationWarning,
+)
 
-from typing import Union
-import numpy as np
-import pandas as pd
-import anndata as ad
-import scanpy as sc
-from scipy.sparse import csc_matrix, csr_matrix, issparse
-
-from workflow_16s.config import AppConfig
-from workflow_16s.utils.logger import get_logger
-
-def get_cfg_value(cfg_obj, key, default=None):
-    if isinstance(cfg_obj, dict): return cfg_obj.get(key, default)
-    return getattr(cfg_obj, key, default)
-
-def _clean_numeric_series(series: pd.Series, col_name: str) -> pd.Series:
-    """
-    Safely attempts to convert a column to numeric.
-    PROTECTIONS:
-    - Skips columns that look like IDs (e.g. contain 'accession', 'id', 'alias').
-    - Skips date columns (handled separately).
-    - Requires >80% valid conversion rate to accept changes.
-    """
-    col_lower = col_name.lower()
-    
-    # 1. SKIP IDENTIFIERS & DATES explicitly
-    # These often contain numbers but should REMAIN strings/objects
-    protected_terms = [
-        'accession', 'alias', 'id', 'name', 'sra', 'project', 'study', 'experiment', 'run', 
-        'sample', 'submission', 'ftp', 'url', 'link', 'md5', 'date', 'created', 'updated', 
-        'time', 'tax_lineage', 'refs', 'publication', 'citation', 'description',
-        'first_public', 'location', 'target_gene', 'pcr_primer', 'primer',
-        'mapping_file', 'lcms_position', 'store_cond',  'earthquake', 'ena'
-    ]
-    if any(term in col_lower for term in protected_terms):
-        return series
-
-    # 2. Standardize Missing Values
-    missing_indicators = ["nan", "NAN", "NaN", "Null", "null", "None", "none", "", " ", "Missing", "missing", "na", "NA", "unknown"]
-    clean = series.copy().astype(str).str.strip()
-    is_missing = clean.isin(missing_indicators) | clean.isna() | (clean.str.lower() == 'nan')
-    
-    # 3. Try Simple Coercion (e.g., "10.5", "-5")
-    numeric_simple = pd.to_numeric(clean, errors='coerce')
-    
-    non_missing_count = (~is_missing).sum()
-    if non_missing_count == 0:
-        return series # Return original if empty
-
-    valid_simple = (~numeric_simple.isna()).sum()
-    ratio_simple = valid_simple / non_missing_count
-
-    if ratio_simple > 0.90:
-        return numeric_simple
-
-    # 4. Aggressive Cleaning (Units)
-    # Only try this if it's NOT a protected ID column
-    # Regex: Extract first float/int (e.g., "10.5 cm" -> 10.5)
-    # Ensure this exists in Step 4 of the function!
-    clean_for_regex = clean.str.replace(',', '', regex=False)
-    numeric_extracted = clean_for_regex.str.extract(r'^(-?\d+\.?\d*)')[0]
-    numeric_aggressive = pd.to_numeric(numeric_extracted, errors='coerce')
-    
-    valid_aggressive = (~numeric_aggressive.isna()).sum()
-    ratio_aggressive = valid_aggressive / non_missing_count
-
-    # Higher threshold for aggressive cleaning to avoid accidents
-    if ratio_aggressive > 0.85:
-        # LOGGING: Only log if we actually changed non-numeric text to numbers
-        salvaged_mask = numeric_simple.isna() & ~numeric_aggressive.isna() & ~is_missing
-        if salvaged_mask.sum() > 0:
-            examples_series = series[salvaged_mask].head(3)
-            example_originals = examples_series.tolist()
-            example_conversions = numeric_aggressive[salvaged_mask].head(3).tolist()
-            logger = get_logger("workflow_16s")
-            logger.info(f"    🔧 Column '{col_name}': detected units/text mixed with numbers. Converting to numeric.\n"
-                        f"       Salvaged {salvaged_mask.sum()} values. Examples: {example_originals} -> {example_conversions}")
-            
-        return numeric_aggressive
-
-    return series
-
-def clean_metadata(adata, config=None):
-    """
-    Standardizes metadata: handles missing values, unifies date formats, 
-    and enforces numeric types ONLY for measurement columns.
-    """
-    # 1. Standardize Missing Values (Global)
-    missing_indicators = ["nan", "Null", "null", "None", "none", "", " ", "Unknown", "unknown", "Missing"]
-    # Only apply global replacement to non-categorical columns
-    non_cat_cols = adata.obs.select_dtypes(exclude=['category']).columns
-    adata.obs[non_cat_cols] = adata.obs[non_cat_cols].replace(missing_indicators, np.nan)
-    
-    # 2. Iterate Columns for Type Inference
-    for col in adata.obs.columns:
-        # Only process object/categorical columns that are NOT already numeric
-        if not pd.api.types.is_numeric_dtype(adata.obs[col]):
-            cleaned_series = _clean_numeric_series(adata.obs[col], col)
-            
-            # Update only if conversion happened
-            if pd.api.types.is_numeric_dtype(cleaned_series):
-                adata.obs[col] = cleaned_series
-
-    # 3. Standardize Dates (Vectorized)
-    # Look for 'date' or 'time' in name, but ignore numeric years (e.g. 2020) if possible
-    date_cols = [c for c in adata.obs.columns if any(x in c.lower() for x in ['date', 'time', 'created', 'updated'])]
-    
-    for col in date_cols:
-        # Skip if already numeric (like 'year' = 2020) unless it's a full timestamp
-        if pd.api.types.is_numeric_dtype(adata.obs[col]):
-            continue
-            
-        try:
-            # Force to datetime -> ISO format
-            adata.obs[col] = pd.to_datetime(adata.obs[col], errors='coerce').dt.strftime('%Y-%m-%d')
-        except Exception:
-            continue
-
-    return adata
-
-def parse_taxonomy(adata: ad.AnnData) -> ad.AnnData:
-    logger = get_logger("workflow_16s")
-    ranks = ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']
+from workflow_16s.core.io.anndata import *  # noqa: F401,F403
     tax_col = next((c for c in adata.var.columns if c.lower() in ['taxon', 'taxonomy', 'lineage']), None)
     
     if not tax_col:
@@ -241,31 +109,49 @@ def _sanitize_adata(adata: ad.AnnData) -> ad.AnnData:
     if adata.obs_names.name is None: adata.obs_names.name = 'sample_id'
     if adata.var_names.name is None: adata.var_names.name = 'feature_id'
     if not adata.obs.index.is_unique: adata.obs_names_make_unique()
-    
+
     for idx_name in [adata.obs_names.name, adata.var_names.name]:
         if idx_name in adata.obs.columns:
-            try: del adata.obs[idx_name]
-            except: pass
-            
+            try:
+                del adata.obs[idx_name]
+            except KeyError:
+                pass
+
     for coord in ['lat', 'lon', 'latitude', 'longitude']:
         if coord in adata.obs.columns:
             adata.obs[coord] = pd.to_numeric(adata.obs[coord], errors='coerce')
+
+    # CRITICAL: Convert datetime columns to strings BEFORE h5py serialization
+    for col in adata.obs.columns:
+        if pd.api.types.is_datetime64_any_dtype(adata.obs[col]):
+            adata.obs[col] = adata.obs[col].astype(str).replace('NaT', '')
 
     problem_cols = ['facility_capacity', 'facility_match', 'study_accession']
     for col in adata.obs.columns:
         if col in problem_cols or adata.obs[col].dtype == 'object':
             adata.obs[col] = adata.obs[col].astype(str).replace(['nan', 'None', 'NaN'], '')
-            
-    try: adata.var_names = adata.var_names.str.strip().tolist()
-    except: pass
-    try: adata.obs_names = adata.obs_names.str.strip().tolist()
-    except: pass
-    
+
+    try:
+        adata.var_names = adata.var_names.str.strip().tolist()
+    except (AttributeError, TypeError, ValueError):
+        pass
+    try:
+        adata.obs_names = adata.obs_names.str.strip().tolist()
+    except (AttributeError, TypeError, ValueError):
+        pass
+
     if not issparse(adata.X): adata.X = csr_matrix(adata.X)
     return adata
 
 def _sanitize_obs(adata_obj):
+    """Sanitize obs DataFrame for h5ad compatibility, including datetime column handling."""
     for col in adata_obj.obs.columns:
+        # CRITICAL: Handle datetime columns first - h5py cannot serialize DatetimeArray
+        if pd.api.types.is_datetime64_any_dtype(adata_obj.obs[col]):
+            # Convert datetime to ISO format strings
+            adata_obj.obs[col] = adata_obj.obs[col].astype(str).replace('NaT', '')
+            continue
+
         dtype_name = adata_obj.obs[col].dtype.name
         if dtype_name in ('object', 'category'):
             cleaned = adata_obj.obs[col].astype(str).replace(['nan', 'None', 'NaN', 'NoneType', '<NA>', '<nan>'], '')
@@ -274,89 +160,6 @@ def _sanitize_obs(adata_obj):
             try: adata_obj.obs[col] = adata_obj.obs[col].to_numpy(dtype=float, na_value=np.nan)
             except Exception: adata_obj.obs[col] = adata_obj.obs[col].astype(str).replace(['nan', 'None', 'NaN', 'NoneType', '<NA>'], '')
     return adata_obj
-
-def fix_adata_dtypes(adata: ad.AnnData, inplace: bool = True) -> Optional[ad.AnnData]:
-    """Fix dtype issues in AnnData that cause h5py write errors."""
-    logger = get_logger("workflow_16s")
-    if not inplace: adata = adata.copy()
-
-    stats = {"dropped": 0, "obs_numeric": 0, "obs_date": 0, "obs_str": 0, "var_numeric": 0, "var_str": 0}
-
-    # 1. Remove reserved column names
-    for reserved in ['_index']:
-        if reserved in adata.obs.columns:
-            adata.obs = adata.obs.drop(columns=[reserved])
-            stats["dropped"] += 1
-        if reserved in adata.var.columns:
-            adata.var = adata.var.drop(columns=[reserved])
-            stats["dropped"] += 1
-    
-    numeric_patterns = [
-        '_km', '_mg_per_', '_ug_per_', '_umol_per_', '_g_per_kg', '_us_per_cm',
-        'SoilGrids_', 'Meteostat_', 'OpenMeteo_', 'EnvironmentalHealth_',
-        'NOAA_Tides_distance', '_percent', '_mv', 'latitude', 'longitude',
-        'elevation', 'depth', 'temperature', 'ph', 'uranium'
-    ]
-    date_patterns = ['_date', 'collection_date', '_time', 'temporal_coverage']
-    
-    # 2. Fix obs dtypes
-    for col in adata.obs.columns:
-        series = adata.obs[col]
-        if col in ('lat', 'lon', 'latitude', 'longitude'):
-            try:
-                adata.obs[col] = pd.to_numeric(series, errors='coerce').astype('float64')
-                stats["obs_numeric"] += 1
-            except Exception: pass
-            continue
-
-        if pd.api.types.is_numeric_dtype(series) or pd.api.types.is_bool_dtype(series) or \
-            isinstance(series.dtype, pd.CategoricalDtype) or pd.api.types.is_datetime64_any_dtype(series):
-            continue
-
-        if series.dtype == object:
-            if any(pattern in col for pattern in date_patterns):
-                try:
-                    adata.obs[col] = pd.to_datetime(series, errors='coerce').dt.strftime('%Y-%m-%d').fillna('').astype(str)
-                    stats["obs_date"] += 1
-                    continue
-                except Exception: pass
-            
-            if any(pattern in col for pattern in numeric_patterns):
-                try:
-                    numeric = pd.to_numeric(series, errors='coerce')
-                    valid_count, num_valid = series.notna().sum(), numeric.notna().sum()
-                    if num_valid >= valid_count * 0.9 or num_valid > 0:
-                        adata.obs[col] = numeric.astype('Int64' if (numeric.dropna() % 1 == 0).all() else 'float64')
-                        stats["obs_numeric"] += 1
-                    else:
-                        adata.obs[col] = series.astype(str)
-                        stats["obs_str"] += 1
-                except Exception:
-                    adata.obs[col] = series.astype(str)
-                    stats["obs_str"] += 1
-            else:
-                adata.obs[col] = series.astype(str)
-                stats["obs_str"] += 1
-    
-    # 3. Fix var dtypes
-    for col in adata.var.columns:
-        series = adata.var[col]
-        if pd.api.types.is_numeric_dtype(series) or isinstance(series.dtype, pd.CategoricalDtype): continue
-        if series.dtype == object:
-            try:
-                numeric = pd.to_numeric(series, errors='coerce')
-                if numeric.notna().sum() >= series.notna().sum() * 0.9:
-                    adata.var[col] = numeric.astype('Int64' if (numeric.dropna() % 1 == 0).all() else 'float64')
-                    stats["var_numeric"] += 1
-                else:
-                    adata.var[col] = series.astype(str)
-                    stats["var_str"] += 1
-            except Exception:
-                adata.var[col] = series.astype(str)
-                stats["var_str"] += 1
-
-    logger.info(f"AnnData Dtypes Fixed | Obs: {stats['obs_numeric']} num, {stats['obs_date']} date, {stats['obs_str']} str | Var: {stats['var_numeric']} num, {stats['var_str']} str | Dropped: {stats['dropped']} reserved cols")
-    if not inplace: return adata
     
 def fix_adata_dtypes(adata: ad.AnnData, inplace: bool = True) -> Optional[ad.AnnData]:
     """
@@ -532,38 +335,6 @@ def format_bytes(size: int) -> str:
     else:
         return f"{size/1024**3:.2f} GB"
     
-def safe_write_h5ad(adata: ad.AnnData, filename: str, fix_dtypes: bool = True, compression: Optional[str] = None):
-    """
-    Safely write AnnData to h5ad file with automatic dtype fixing.
-    
-    Parameters
-    ----------
-    adata : ad.AnnData
-        AnnData object to save
-    filename : str
-        Output filename
-    fix_dtypes : bool, default=True
-        Whether to fix dtypes before writing
-    compression : str, optional
-        Compression to use ('gzip', 'lzf', None)
-    """
-    logger = get_logger("workflow_16s")
-    if fix_dtypes:
-        # Make a copy to avoid modifying original if inplace fixing is not desired globally here
-        # But fix_adata_dtypes default is inplace=True. 
-        # To be safe for a "save" operation, we operate on a copy if we don't want to touch the runtime object.
-        adata_copy = adata.copy()
-        fix_adata_dtypes(adata_copy, inplace=True)
-        valid_compressions = ('gzip', 'lzf', None)
-        compression_arg = compression if compression in valid_compressions else None
-        adata_copy.write_h5ad(filename, compression=compression_arg)
-        logger.info(f"Saved AnnData to {filename} (with dtype fixes)")
-    else:
-        valid_compressions = ('gzip', 'lzf', None)
-        compression_arg = compression if compression in valid_compressions else None
-        adata.write_h5ad(filename, compression=compression_arg)
-        logger.info(f"Saved AnnData to {filename}")
-        
 def safe_write_h5ad(adata: ad.AnnData, filename: str, fix_dtypes: bool = True, compression: Optional[str] = None):
     """Safely write AnnData to h5ad file."""
     logger = get_logger("workflow_16s")
