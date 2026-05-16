@@ -73,13 +73,43 @@ Shims should be small, import-tested, and included in the test matrix.
 - Merge only when tests pass in CI.
 - Release with deprecation notes; remove shims in next major release.
 
-## Next steps (immediate)
+## Migration Progress
 
-1. Create `workflow_16s/core/__init__.py` and move a small proof-of-concept
-   utility (`utils/io/anndata.py`) into `core/` with imports updated.
-2. Add shims for the moved module.
-3. Commit and push the migration plan and proof-of-concept changes.
+### Completed Phase 1 Moves
+
+**Proof-of-Concept (POC):**
+- ✅ `utils/io/anndata.py` → `core/io/anndata.py` (commit 6f31e7c)
+  - Test: `test_anndata_migration.py` (2 tests, PASSING)
+
+**Phase 1 Utilities** (in progress):
+- ✅ `utils/progress.py` → `core/progress.py` (commit 5b04be8)
+  - Test: `test_phase1_moves.py::test_progress_compat_shim` (PASSING)
+  
+- ✅ `utils/dir_utils.py` → `core/dir_utils.py` (commit 5b04be8)
+  - Test: `test_phase1_moves.py::test_dir_utils_compat_shim` (PASSING)
+
+**Test Suite:**
+- `test_anndata_migration.py` – Validates anndata POC move (2 tests)
+- `test_module_compat_layers.py` – Validates existing compat shims (3 tests)
+- `test_phase1_moves.py` – Validates Phase 1 utility moves (2 tests)
+- **Total: 7 tests, all PASSING**
+
+### Pending Phase 1 Utilities
+
+Small to medium (100-300 LOC) candidates for next round:
+- `utils/biom_utils.py` (133 LOC)
+- `utils/config.py` (36 LOC)
+- `utils/constants.py` (285 LOC)
+- `utils/auto_tune.py` (295 LOC)
+
+## Next steps
+
+1. Continue Phase 1 with remaining small utilities (biom_utils, config, constants).
+2. Validate each move with tests following the established pattern.
+3. Plan file splits for large utilities (publication_fetcher: 1458 LOC).
+4. Begin Phase 2: Move api/sequence/ena/* modules with preservation constraints.
 
 ---
 
 Document created by migration assistant on 2026-05-15.
+Last updated: 2026-05-15 (Phase 1 progress recorded).
