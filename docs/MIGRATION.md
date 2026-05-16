@@ -99,18 +99,23 @@ Shims should be small, import-tested, and included in the test matrix.
   - Contains: ResultsValidator, get_validator(), validate_results()
 - Tests: `test_phase1_batch3.py` (2 tests, PASSING)
 
+**Phase 1 Batch 4 Utilities:**
+- ✅ `utils/auto_tune.py` → `core/auto_tune.py` (commit 38d366e)
+  - Contains: AutoTuner, get_auto_tuner(), auto_tune_config()
+- Tests: `test_phase1_batch4.py` (1 test, PASSING)
+
 **Comprehensive Test Suite:**
 - `test_anndata_migration.py` – Validates anndata POC move (2 tests)
 - `test_module_compat_layers.py` – Validates existing compat shims (3 tests)
 - `test_phase1_moves.py` – Validates Phase 1 batch 1 (2 tests)
 - `test_phase1_batch2.py` – Validates Phase 1 batch 2 (2 tests)
 - `test_phase1_batch3.py` – Validates Phase 1 batch 3 (2 tests)
-- **Total: 11 tests, all PASSING**
+- `test_phase1_batch4.py` – Validates Phase 1 batch 4 (1 test)
+- **Total: 12 tests, all PASSING**
 
 ### Remaining Phase 1 Utilities
 
 Candidates for next rounds:
-- `utils/auto_tune.py` (295 LOC) - optimization utilities
 - `utils/faprotax.py` (473 LOC) - FAPROTAX database access (consider split)
 - `utils/data.py` (726 LOC) - data loading (consider split)
 - `utils/compositional.py` (731 LOC) - compositional analysis (consider split)
@@ -126,4 +131,4 @@ Candidates for next rounds:
 ---
 
 Document created by migration assistant on 2026-05-15.
-Last updated: 2026-05-15 (Phase 1 batch 3 progress recorded).
+Last updated: 2026-05-16 (Phase 1 batch 4 progress recorded).
