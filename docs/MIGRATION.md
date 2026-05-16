@@ -83,47 +83,47 @@ Shims should be small, import-tested, and included in the test matrix.
 
 **Phase 1 Batch 1 Utilities:**
 - ✅ `utils/progress.py` → `core/progress.py` (commit 5b04be8)
-  - Test: `test_phase1_moves.py::test_progress_compat_shim` (PASSING)
-  
 - ✅ `utils/dir_utils.py` → `core/dir_utils.py` (commit 5b04be8)
-  - Test: `test_phase1_moves.py::test_dir_utils_compat_shim` (PASSING)
+- Tests: `test_phase1_moves.py` (2 tests, PASSING)
 
 **Phase 1 Batch 2 Utilities:**
 - ✅ `utils/biom_utils.py` → `core/biom_utils.py` (commit 8c9016b)
-  - Test: `test_phase1_batch2.py::test_biom_utils_compat_shim` (PASSING)
   - Note: Now imports from `core.progress`, not `utils.progress`
-
 - ✅ `utils/constants.py` → `core/constants.py` (commit 8c9016b)
-  - Test: `test_phase1_batch2.py::test_constants_compat_shim` (PASSING)
+- Tests: `test_phase1_batch2.py` (2 tests, PASSING)
 
-**Test Suite:**
+**Phase 1 Batch 3 Utilities:**
+- ✅ `utils/taxonomy.py` → `core/taxonomy.py` (commit c2c27f1)
+  - Contains: FaprotaxDB, FaprotaxError, DownloaderError, ParserError
+- ✅ `utils/validation.py` → `core/validation.py` (commit c2c27f1)
+  - Contains: ResultsValidator, get_validator(), validate_results()
+- Tests: `test_phase1_batch3.py` (2 tests, PASSING)
+
+**Comprehensive Test Suite:**
 - `test_anndata_migration.py` – Validates anndata POC move (2 tests)
 - `test_module_compat_layers.py` – Validates existing compat shims (3 tests)
 - `test_phase1_moves.py` – Validates Phase 1 batch 1 (2 tests)
 - `test_phase1_batch2.py` – Validates Phase 1 batch 2 (2 tests)
-- **Total: 9 tests, all PASSING**
+- `test_phase1_batch3.py` – Validates Phase 1 batch 3 (2 tests)
+- **Total: 11 tests, all PASSING**
 
-### Pending Phase 1 Utilities
+### Remaining Phase 1 Utilities
 
-Small to medium (100-300 LOC) candidates for next round:
-- `utils/taxonomy.py` (220 LOC)
-- `utils/validation.py` (318 LOC)
-- `utils/auto_tune.py` (295 LOC)
-
-Large candidates (require analysis/splitting):
-- `utils/faprotax.py` (473 LOC)
-- `utils/data.py` (726 LOC)
-- `utils/compositional.py` (731 LOC)
+Candidates for next rounds:
+- `utils/auto_tune.py` (295 LOC) - optimization utilities
+- `utils/faprotax.py` (473 LOC) - FAPROTAX database access (consider split)
+- `utils/data.py` (726 LOC) - data loading (consider split)
+- `utils/compositional.py` (731 LOC) - compositional analysis (consider split)
 - `utils/publication_fetcher.py` (1458 LOC - requires split)
 
 ## Next steps
 
-1. Continue Phase 1 with remaining small utilities (taxonomy, validation, auto_tune).
-2. Validate each move with tests following the established pattern.
-3. Plan file splits for large utilities (publication_fetcher: 1458 LOC).
-4. Begin Phase 2: Move api/sequence/ena/* modules with preservation constraints.
+1. Continue Phase 1 with `auto_tune.py` (295 LOC) for batch 4.
+2. For large files (473+ LOC), plan splits into focused modules before moving.
+3. After Phase 1 completes, begin Phase 2: Move api/sequence/ena/* with preservation.
+4. Consider Phase 3: Move environmental API modules to ingest/environmental/*.
 
 ---
 
 Document created by migration assistant on 2026-05-15.
-Last updated: 2026-05-15 (Phase 1 batch 2 progress recorded).
+Last updated: 2026-05-15 (Phase 1 batch 3 progress recorded).
