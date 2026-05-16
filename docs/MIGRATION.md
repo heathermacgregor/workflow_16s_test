@@ -81,30 +81,44 @@ Shims should be small, import-tested, and included in the test matrix.
 - ✅ `utils/io/anndata.py` → `core/io/anndata.py` (commit 6f31e7c)
   - Test: `test_anndata_migration.py` (2 tests, PASSING)
 
-**Phase 1 Utilities** (in progress):
+**Phase 1 Batch 1 Utilities:**
 - ✅ `utils/progress.py` → `core/progress.py` (commit 5b04be8)
   - Test: `test_phase1_moves.py::test_progress_compat_shim` (PASSING)
   
 - ✅ `utils/dir_utils.py` → `core/dir_utils.py` (commit 5b04be8)
   - Test: `test_phase1_moves.py::test_dir_utils_compat_shim` (PASSING)
 
+**Phase 1 Batch 2 Utilities:**
+- ✅ `utils/biom_utils.py` → `core/biom_utils.py` (commit 8c9016b)
+  - Test: `test_phase1_batch2.py::test_biom_utils_compat_shim` (PASSING)
+  - Note: Now imports from `core.progress`, not `utils.progress`
+
+- ✅ `utils/constants.py` → `core/constants.py` (commit 8c9016b)
+  - Test: `test_phase1_batch2.py::test_constants_compat_shim` (PASSING)
+
 **Test Suite:**
 - `test_anndata_migration.py` – Validates anndata POC move (2 tests)
 - `test_module_compat_layers.py` – Validates existing compat shims (3 tests)
-- `test_phase1_moves.py` – Validates Phase 1 utility moves (2 tests)
-- **Total: 7 tests, all PASSING**
+- `test_phase1_moves.py` – Validates Phase 1 batch 1 (2 tests)
+- `test_phase1_batch2.py` – Validates Phase 1 batch 2 (2 tests)
+- **Total: 9 tests, all PASSING**
 
 ### Pending Phase 1 Utilities
 
 Small to medium (100-300 LOC) candidates for next round:
-- `utils/biom_utils.py` (133 LOC)
-- `utils/config.py` (36 LOC)
-- `utils/constants.py` (285 LOC)
+- `utils/taxonomy.py` (220 LOC)
+- `utils/validation.py` (318 LOC)
 - `utils/auto_tune.py` (295 LOC)
+
+Large candidates (require analysis/splitting):
+- `utils/faprotax.py` (473 LOC)
+- `utils/data.py` (726 LOC)
+- `utils/compositional.py` (731 LOC)
+- `utils/publication_fetcher.py` (1458 LOC - requires split)
 
 ## Next steps
 
-1. Continue Phase 1 with remaining small utilities (biom_utils, config, constants).
+1. Continue Phase 1 with remaining small utilities (taxonomy, validation, auto_tune).
 2. Validate each move with tests following the established pattern.
 3. Plan file splits for large utilities (publication_fetcher: 1458 LOC).
 4. Begin Phase 2: Move api/sequence/ena/* modules with preservation constraints.
@@ -112,4 +126,4 @@ Small to medium (100-300 LOC) candidates for next round:
 ---
 
 Document created by migration assistant on 2026-05-15.
-Last updated: 2026-05-15 (Phase 1 progress recorded).
+Last updated: 2026-05-15 (Phase 1 batch 2 progress recorded).
